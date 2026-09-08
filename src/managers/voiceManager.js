@@ -10,6 +10,8 @@
  * - Soporte para pausar la música cuando entra una transmisión TTS y reanudarla después.
  */
 
+const path = require('path');
+const fs = require('fs');
 const ffmpegPath = require('ffmpeg-static');
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
@@ -26,7 +28,6 @@ const {
   entersState,
   StreamType
 } = require('@discordjs/voice');
-const fs = require('fs');
 // youtube-dl-exec: wrapper robusto de yt-dlp para obtener URLs de audio de YouTube
 const youtubedl = require('youtube-dl-exec');
 const config = require('../../config');

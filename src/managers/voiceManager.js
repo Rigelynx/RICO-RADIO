@@ -24,36 +24,101 @@ const {
   entersState,
   StreamType
 } = require('@discordjs/voice');
+const fs = require('fs');
+const path = require('path');
 // youtube-dl-exec: wrapper robusto de yt-dlp para obtener URLs de audio de YouTube
 const youtubedl = require('youtube-dl-exec');
 const config = require('../../config');
 const storageManager = require('./storageManager');
 const { createSuccessEmbed, createErrorEmbed, createWarningEmbed } = require('../utils/militaryEmbeds');
 
+// Asegurar permisos de ejecución de yt-dlp en contenedores Linux (HolyHosting/Pterodactyl)
+if (process.platform === 'linux') {
+  try {
+    const candidatePaths = [
+      path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp'),
+      path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.linux')
+    ];
+    for (const binP of candidatePaths) {
+      if (fs.existsSync(binP)) {
+        fs.chmodSync(binP, '755');
+        console.log(`🛡️ [SISTEMA LINUX] Permisos 755 otorgados a yt-dlp en: ${binP}`);
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ [LINUX CHMOD] No se pudieron aplicar permisos a yt-dlp:', e.message);
+  }
+}
+
+/**
+ * Busca si existe un archivo de cookies de YouTube en la raíz o en .env
+ * @returns {string|null}
+ */
+function getYoutubeCookiesPath() {
+  const customPath = process.env.YOUTUBE_COOKIES_PATH;
+  if (customPath && fs.existsSync(customPath)) {
+    return customPath;
+  }
+  const defaultPath = path.join(process.cwd(), 'cookies.txt');
+  if (fs.existsSync(defaultPath)) {
+    return defaultPath;
+  }
+  return null;
+}
+
 /**
  * Obtiene la URL de audio directa de un video de YouTube via yt-dlp.
  * Selecciona el mejor formato de solo-audio disponible.
+ * Soporta autenticación mediante archivo cookies.txt para evadir bloqueos de datacenter.
  * @param {string} youtubeUrl 
  * @returns {Promise<{url: string, title: string}>}
  */
 async function getYoutubeAudioUrl(youtubeUrl) {
-  const info = await youtubedl(youtubeUrl, {
+  const cookiesPath = getYoutubeCookiesPath();
+  if (cookiesPath) {
+    console.log(`🍪 [YOUTUBE AUTH] Empleando archivo de cookies táctico: ${cookiesPath}`);
+  } else {
+    console.log('ℹ️ [YOUTUBE] No se detectó archivo cookies.txt en la raíz. Conectando directo...');
+  }
+
+  const flags = {
     dumpSingleJson: true,
     noCheckCertificates: true,
     noWarnings: true,
     preferFreeFormats: true,
     addHeader: ['referer:youtube.com', 'user-agent:googlebot'],
     format: 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
-  });
+  };
 
-  const title = info.title || 'Transmisión Táctica Militar';
-  const audioUrl = info.url;
-
-  if (!audioUrl) {
-    throw new Error('No se pudo obtener URL de audio desde YouTube.');
+  if (cookiesPath) {
+    flags.cookies = cookiesPath;
   }
 
-  return { url: audioUrl, title };
+  try {
+    const info = await youtubedl(youtubeUrl, flags);
+    const title = info.title || 'Transmisión Táctica Militar';
+    const audioUrl = info.url;
+
+    if (!audioUrl) {
+      throw new Error('No se pudo extraer la URL directa de audio del video.');
+    }
+
+    return { url: audioUrl, title };
+  } catch (error) {
+    const errMsg = (error.message || '').toLowerCase();
+    if (
+      errMsg.includes('sign in to confirm') ||
+      errMsg.includes('not a bot') ||
+      errMsg.includes('403') ||
+      errMsg.includes('bot detection')
+    ) {
+      throw new Error(
+        'YouTube ha bloqueado la IP del hosting pidiendo verificación ("Sign in to confirm you are not a bot"). ' +
+        'Solución: Sube tu archivo `cookies.txt` al hosting en la carpeta raíz del bot.'
+      );
+    }
+    throw error;
+  }
 }
 
 // Estructura en memoria del estado de voz por servidor (Single Guild)

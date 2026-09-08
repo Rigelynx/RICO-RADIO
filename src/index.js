@@ -85,19 +85,22 @@ client.on('messageCreate', async (message) => {
   const botVoiceChannel = message.guild.members.me?.voice?.channel;
 
   // ---- MODO 1: CHAT INTEGRADO DEL CANAL DE VOZ ----
-  // Si el mensaje viene del chat de texto integrado en un canal de voz (GuildVoice),
-  // y el bot está conectado exactamente a ese mismo canal, leerlo automáticamente
-  // sin necesidad de configurar ttsChannelId.
   const isVoiceChannelChat = message.channel.type === ChannelType.GuildVoice ||
-                             message.channel.type === ChannelType.GuildStageVoice;
+                             message.channel.type === ChannelType.GuildStageVoice ||
+                             (typeof message.channel.isVoiceBased === 'function' && message.channel.isVoiceBased());
+
+  let targetVoiceChannel = null;
 
   if (isVoiceChannelChat) {
-    // Solo leer si el bot está conectado a ese canal de voz específico
-    if (!botVoiceChannel || botVoiceChannel.id !== message.channel.id) return;
-    // El bot está en ese canal de voz: proceder a leer (saltar al bloque de lectura)
+    // Si el bot ya está activo en otro canal de voz diferente, no cambiar
+    if (botVoiceChannel && botVoiceChannel.id !== message.channel.id) {
+      return;
+    }
+    // Si el bot no está en voz, unirse al canal de voz donde se escribió
+    targetVoiceChannel = botVoiceChannel || message.channel;
+    console.log(`📡 [VOICE CHAT] Mensaje detectado en el chat de voz "${message.channel.name}" de ${message.author.tag}`);
   } else {
     // ---- MODO 2: CANAL DE TEXTO VIGILADO (configuración ttsChannelId) ----
-    // Regla 4: Comprobar si el mensaje proviene del canal de texto vigilado configurado
     if (!currentConfig.ttsChannelId || message.channel.id !== currentConfig.ttsChannelId) return;
 
     if (!botVoiceChannel) {
@@ -116,14 +119,20 @@ client.on('messageCreate', async (message) => {
       }
       return;
     }
+    targetVoiceChannel = botVoiceChannel;
   }
+
+  if (!targetVoiceChannel) return;
 
   // Si está conectado a voz, resetear la bandera de aviso
   hasWarnedDisconnected = false;
 
   // Regla 6: Control de longitud de mensaje (máximo 200 caracteres para no saturar la radio)
   let textToRead = message.cleanContent.trim();
-  if (!textToRead) return;
+  if (!textToRead) {
+    console.warn(`⚠️ [AVISO TTS] Mensaje de ${message.author.tag} recibido sin texto legible. Verifica si 'MESSAGE CONTENT INTENT' está activado en Discord Developer Portal.`);
+    return;
+  }
 
   const userNickname = message.member?.displayName || message.author.username;
 
@@ -135,7 +144,7 @@ client.on('messageCreate', async (message) => {
 
   try {
     // Pasar a la cola del gestor de TTS (pausará la música, hablará y la reanudará)
-    await ttsManager.speak(fullBroadcastText, botVoiceChannel);
+    await ttsManager.speak(fullBroadcastText, targetVoiceChannel);
   } catch (error) {
     console.error('⚠️ [ERROR AUTO-TTS]:', error.message);
   }

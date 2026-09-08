@@ -1,19 +1,21 @@
 /**
- * GESTOR DE AUDIO Y VOZ MILITAR - SARGENTO RICO (v4 - FFmpeg Pipe)
+ * GESTOR DE AUDIO Y VOZ MILITAR - SARGENTO RICO (v6 - Stream Verificado)
  *
- * Estrategia de reproducción:
- *   1. yt-dlp --get-url → obtiene URL directa del audio (rápido, sin datos)
- *   2. FFmpeg spawn → decodifica la URL a PCM 48kHz y hace pipe a @discordjs/voice
- *   3. Si YouTube bloquea la IP, UN SOLO intento en SoundCloud (sin bucle)
+ * Estrategia definitiva de reproducción:
+ *   yt-dlp exec --output - → stdout pipe → createAudioResource(StreamType.Arbitrary)
+ *   → @discordjs/voice usa su FFmpeg interno para decodificar a Opus
  *
- * Esta es la misma estrategia de DisTube, discord-player y bots de producción.
+ * CORRECCIONES v6:
+ *   - verifyStreamHasData: espera bytes REALES del stdout antes de aceptar
+ *   - Cooldown de loop: mínimo 8s entre reinicios para evitar ciclos infinitos
+ *   - Contador de fallos consecutivos: pausa el loop 30s si falla 3 veces seguidas
+ *   - noPlaylist: true en SoundCloud para evitar streams vacíos
  */
 
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
 
-// Resolver ruta de ffmpeg-static e inyectarla en el PATH del proceso
+// Inyectar ffmpeg-static en PATH para que @discordjs/voice lo encuentre
 const ffmpegPath = require('ffmpeg-static');
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
@@ -40,216 +42,255 @@ const { createSuccessEmbed, createErrorEmbed, createWarningEmbed } = require('..
 // ─────────────────────────────────────────────────────────────────────────────
 if (process.platform === 'linux') {
   try {
-    const candidatePaths = [
+    const bins = [
       path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp'),
       path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.linux'),
       path.join(process.cwd(), 'node_modules', 'ffmpeg-static', 'ffmpeg')
     ];
-    for (const binP of candidatePaths) {
-      if (fs.existsSync(binP)) {
-        fs.chmodSync(binP, '755');
-        console.log(`🛡️ [SISTEMA LINUX] Permisos 755 otorgados en: ${binP}`);
+    for (const b of bins) {
+      if (fs.existsSync(b)) {
+        fs.chmodSync(b, '755');
+        console.log(`🛡️ [SISTEMA LINUX] Permisos 755: ${b}`);
       }
     }
   } catch (e) {
-    console.warn('⚠️ [LINUX CHMOD] No se pudieron aplicar permisos:', e.message);
+    console.warn('⚠️ [LINUX CHMOD]:', e.message);
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPERS INTERNOS
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Retorna la ruta del archivo cookies.txt si existe */
 function getYoutubeCookiesPath() {
-  const customPath = process.env.YOUTUBE_COOKIES_PATH;
-  if (customPath && fs.existsSync(customPath)) return customPath;
-  const defaultPath = path.join(process.cwd(), 'cookies.txt');
-  if (fs.existsSync(defaultPath)) return defaultPath;
+  const custom = process.env.YOUTUBE_COOKIES_PATH;
+  if (custom && fs.existsSync(custom)) return custom;
+  const def = path.join(process.cwd(), 'cookies.txt');
+  if (fs.existsSync(def)) return def;
   return null;
 }
 
 /**
- * Obtiene solo el título de una pista (sin descargar audio).
- * Para URLs de YouTube usa oEmbed. Para búsquedas de texto usa yt-dlp --dump-json.
- * @param {string} query
- * @returns {Promise<string>}
+ * Obtiene el título de una pista sin descargar audio.
+ * YouTube → oEmbed API. Búsqueda de texto → yt-dlp --dump-single-json.
  */
 async function fetchTitle(query) {
   const isUrl = query.startsWith('http');
 
   if (isUrl && (query.includes('youtube.com') || query.includes('youtu.be'))) {
     try {
-      const res = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.title) return data.title;
+      const r = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.title) return d.title;
       }
     } catch {}
   }
 
   if (!isUrl) {
     try {
-      const cookiesPath = getYoutubeCookiesPath();
-      const result = await youtubedl(`ytsearch1:${query}`, {
+      const cookies = getYoutubeCookiesPath();
+      const res = await youtubedl(`ytsearch1:${query}`, {
         dumpSingleJson: true,
         noWarnings: true,
         noCheckCertificates: true,
-        ...(cookiesPath ? { cookies: cookiesPath } : {})
+        ...(cookies ? { cookies } : {})
       });
-      if (result && result.title) return result.title;
+      if (res && res.title) return res.title;
     } catch {}
     return query;
   }
 
-  return 'Transmisión Táctica Militar';
+  return 'Transmisión Táctica';
 }
 
 /**
- * Obtiene la URL directa del stream de audio via yt-dlp --get-url.
- * NO descarga ni hace pipe de datos de audio — solo devuelve la URL.
- * @param {string} target - URL o prefijo ytsearch1:/scsearch1:
- * @param {object} extraArgs - Argumentos extra para yt-dlp
- * @returns {Promise<string>} URL directa del audio
+ * Lanza yt-dlp en modo pipe (--output -) y crea un AudioResource.
+ *
+ * yt-dlp descarga/transmite el audio a stdout, que se pasa directamente a
+ * @discordjs/voice con StreamType.Arbitrary. Voice usa su FFmpeg interno
+ * para decodificar el stream (webm/opus/mp4/etc.) a Opus para Discord.
+ *
+ * NO usa URLs pre-firmadas → no hay expiración de URLs.
+ *
+ * @param {string} target    - yt-dlp target: URL, ytsearch1:query, scsearch1:query
+ * @param {object} extraArgs - Argumentos adicionales para yt-dlp
+ * @returns {{ resource: AudioResource, process: ChildProcess }}
  */
-async function getDirectAudioUrl(target, extraArgs = {}) {
-  const cookiesPath = getYoutubeCookiesPath();
-  if (cookiesPath) {
-    console.log(`🍪 [YOUTUBE AUTH] Usando cookies: ${cookiesPath}`);
-  }
+function createYtdlpPipeResource(target, extraArgs = {}) {
+  const cookies = getYoutubeCookiesPath();
+  if (cookies) console.log(`🍪 [AUTH] Usando cookies: ${cookies}`);
 
-  const args = {
-    getUrl: true,
-    format: 'ba/b',
+  const ytProcess = youtubedl.exec(target, {
+    output: '-',              // Pipe audio a stdout
+    format: 'ba/b',           // Mejor audio disponible
     noWarnings: true,
     noCheckCertificates: true,
-    ...(cookiesPath ? { cookies: cookiesPath } : {}),
+    ...(cookies ? { cookies } : {}),
     ...extraArgs
-  };
-
-  const raw = await youtubedl(target, args);
-  const lines = String(raw).trim().split('\n');
-  const found = lines.find(l => l.trim().startsWith('http'));
-  if (!found) throw new Error('yt-dlp no devolvió una URL de audio válida');
-  return found.trim();
-}
-
-/**
- * Crea un AudioResource usando FFmpeg para decodificar la URL directa.
- * FFmpeg lee desde la URL (HTTP), decodifica y escribe PCM s16le a su stdout.
- * @discordjs/voice lee el PCM y lo encoda a Opus para Discord.
- *
- * Esta es la misma técnica que usa DisTube y discord-player internamente.
- *
- * @param {string} audioUrl - URL directa del audio (obtenida de yt-dlp)
- * @returns {import('@discordjs/voice').AudioResource}
- */
-function createFfmpegResource(audioUrl) {
-  const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
-
-  const ffmpegArgs = [
-    '-reconnect', '1',
-    '-reconnect_streamed', '1',
-    '-reconnect_delay_max', '5',
-    '-reconnect_on_network_error', '1',
-    '-i', audioUrl,
-    '-loglevel', 'error',
-    '-vn',            // Sin video
-    '-f', 's16le',    // PCM signed 16-bit little-endian
-    '-ar', '48000',   // 48kHz (requerido por Discord)
-    '-ac', '2',       // Estéreo
-    'pipe:1'          // Output a stdout
-  ];
-
-  const ffmpegProcess = spawn(ffmpegBin, ffmpegArgs, {
-    stdio: ['ignore', 'pipe', 'pipe']
   });
 
-  // Capturar stderr de FFmpeg para diagnóstico (solo en errores)
-  let ffmpegStderr = '';
-  ffmpegProcess.stderr.on('data', (chunk) => { ffmpegStderr += chunk.toString(); });
-  ffmpegProcess.on('exit', (code) => {
-    if (code !== 0 && ffmpegStderr) {
-      console.warn(`⚠️ [FFMPEG EXIT ${code}]:`, ffmpegStderr.slice(0, 300));
+  if (!ytProcess || !ytProcess.stdout) {
+    throw new Error('yt-dlp no pudo iniciar el proceso de audio');
+  }
+
+  // Capturar stderr para diagnóstico (solo errores reales, sin spam)
+  let stderrBuf = '';
+  ytProcess.stderr.on('data', chunk => { stderrBuf += chunk.toString(); });
+  ytProcess.on('exit', code => {
+    if (code !== 0 && stderrBuf) {
+      // Filtrar solo líneas de ERROR, ignorar warnings de deprecación
+      const errLines = stderrBuf.split('\n')
+        .filter(l => l.includes('ERROR:') || l.includes('error'))
+        .slice(0, 3)
+        .join(' | ');
+      if (errLines) console.warn(`⚠️ [YT-DLP ${code}]: ${errLines}`);
     }
   });
 
-  const resource = createAudioResource(ffmpegProcess.stdout, {
-    inputType: StreamType.Raw,  // PCM s16le = StreamType.Raw
+  // StreamType.Arbitrary: @discordjs/voice usará su FFmpeg interno para decodificar
+  const resource = createAudioResource(ytProcess.stdout, {
+    inputType: StreamType.Arbitrary,
     inlineVolume: true
   });
 
-  // Guardar referencia al proceso para poder matarlo al parar
-  resource._ffmpegProcess = ffmpegProcess;
-
-  return resource;
+  resource._ytProcess = ytProcess;
+  return { resource, process: ytProcess };
 }
 
 /**
- * Resuelve audio de YouTube (o SoundCloud como fallback) y crea un AudioResource.
- * - Paso 1: yt-dlp --get-url (rápido, sin datos de audio)
- * - Paso 2: FFmpeg spawn con la URL obtenida
- * - Si YouTube falla → UN SOLO intento en SoundCloud (sin bucle)
+ * Resuelve la fuente de audio con fallback YouTube → SoundCloud.
+ * Acepta preferredSource para loops (intenta la fuente que funcionó antes).
  *
- * Las URLs pre-firmadas de YouTube/SoundCloud expiran (horas), por lo que
- * esta función debe llamarse en CADA ciclo de loop, no cachear la URL.
- *
- * @param {string} query - URL de YouTube o término de búsqueda
- * @param {string} [preferredSource] - 'soundcloud' | 'youtube' — fuente preferida a intentar primero
- * @returns {Promise<{resource, title, source, resolvedUrl}>}
+ * @param {string} query           - URL de YouTube o término de búsqueda
+ * @param {string} preferredSource - 'youtube' | 'soundcloud'
+ * @returns {Promise<{ resource, title, source }>}
  */
-async function resolveAudioStream(query, preferredSource = 'youtube') {
+async function resolveStream(query, preferredSource = 'youtube') {
   const isUrl = query.startsWith('http');
   const ytTarget = isUrl ? query : `ytsearch1:${query}`;
 
   const title = await fetchTitle(query);
 
-  // ── Si la última vez funcionó SoundCloud, intentarlo PRIMERO ──
+  // ── Si la última fuente que funcionó fue SoundCloud, intentarla primero ──
   if (preferredSource === 'soundcloud') {
     try {
-      console.log(`🎵 [LOOP] Renovando stream de SoundCloud para: "${title.replace(' 📻', '')}"...`);
-      const audioUrl = await getDirectAudioUrl(`scsearch1:${title.replace(' 📻', '')}`, { format: 'bestaudio/best' });
-      const resource = createFfmpegResource(audioUrl);
-      console.log(`✅ [SOUNDCLOUD] Stream renovado: "${title}"`);
-      return { resource, title, source: 'soundcloud', resolvedUrl: audioUrl };
-    } catch (scErr) {
-      console.warn(`⚠️ [SOUNDCLOUD] Falló la renovación, intentando YouTube: ${scErr.message}`);
+      const cleanTitle = title.replace(' 📻', '');
+      console.log(`🎵 [LOOP] Renovando stream de SoundCloud para: "${cleanTitle}"...`);
+      const { resource } = createYtdlpPipeResource(`scsearch1:${cleanTitle}`, {
+        format: 'bestaudio/best',
+        noPlaylist: true
+      });
+      await verifyStreamHasData(resource._ytProcess, 4096, 12000);
+      console.log(`✅ [SOUNDCLOUD] Stream renovado: "${cleanTitle}"`);
+      return { resource, title, source: 'soundcloud' };
+    } catch (e) {
+      console.warn(`⚠️ [SOUNDCLOUD] Sin datos reales: ${e.message}. Intentando YouTube...`);
     }
   }
 
   // ── Intento YouTube ──
   try {
     console.log(`🎵 [BUSCANDO] "${title}" en YouTube...`);
-    const audioUrl = await getDirectAudioUrl(ytTarget);
-    const resource = createFfmpegResource(audioUrl);
-    console.log(`✅ [YOUTUBE] Stream listo: "${title}"`);
-    return { resource, title, source: 'youtube', resolvedUrl: audioUrl };
+    const { resource } = createYtdlpPipeResource(ytTarget);
+    await verifyStreamHasData(resource._ytProcess, 4096, 12000);
+    console.log(`✅ [YOUTUBE] Stream verificado: "${title}"`);
+    return { resource, title, source: 'youtube' };
   } catch (ytErr) {
     const errLine = ytErr.message.split('\n').find(l => l.includes('ERROR:')) || ytErr.message.split('\n')[0];
     console.warn(`⚠️ [YOUTUBE BLOQUEADO] ${errLine}`);
   }
 
-  // ── Fallback SoundCloud (si preferredSource no era soundcloud ya) ──
+  // ── Fallback SoundCloud ──
   if (preferredSource !== 'soundcloud') {
     console.warn(`📡 [RELEVO TÁCTICO] Conectando a SoundCloud para: "${title}"...`);
     try {
-      const audioUrl = await getDirectAudioUrl(`scsearch1:${title}`, { format: 'bestaudio/best' });
-      const resource = createFfmpegResource(audioUrl);
+      const { resource } = createYtdlpPipeResource(`scsearch1:${title}`, {
+        format: 'bestaudio/best',
+        noPlaylist: true
+      });
+      await verifyStreamHasData(resource._ytProcess, 4096, 12000);
       console.log(`✅ [SOUNDCLOUD] Stream listo: "${title}"`);
-      return { resource, title: `${title} 📻`, source: 'soundcloud', resolvedUrl: audioUrl };
+      return { resource, title: `${title} 📻`, source: 'soundcloud' };
     } catch (scErr) {
-      console.error(`❌ [SOUNDCLOUD FALLIDO]: ${scErr.message}`);
+      console.error(`❌ [SOUNDCLOUD]: ${scErr.message}`);
     }
   }
 
   throw new Error(
-    `No se pudo reproducir "${title}". YouTube bloqueó la IP y SoundCloud tampoco respondió. ` +
-    `Intenta con otro título o una URL directa de audio (mp3/stream de radio).`
+    `No se pudo reproducir "${title}". Ambas fuentes (YouTube y SoundCloud) fallaron.`
   );
 }
 
+/**
+ * Verifica que el proceso yt-dlp produce DATOS REALES en stdout
+ * antes de considerarlo un stream válido.
+ *
+ * Espera recibir al menos `minBytes` bytes del stdout dentro de `timeoutMs`.
+ * Si el proceso muere antes sin datos → rechaza.
+ * Si recibe datos suficientes → resuelve (stream es válido).
+ *
+ * @param {ChildProcess} proc
+ * @param {number} minBytes   - Mínimo de bytes para considerar el stream válido (default: 4096)
+ * @param {number} timeoutMs  - Tiempo máximo de espera en ms (default: 12000)
+ */
+function verifyStreamHasData(proc, minBytes = 4096, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    let bytesReceived = 0;
+    let resolved = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (proc.stdout) proc.stdout.removeListener('data', onData);
+      proc.removeListener('exit', onExit);
+    };
+
+    const onData = (chunk) => {
+      bytesReceived += chunk.length;
+      if (bytesReceived >= minBytes && !resolved) {
+        resolved = true;
+        cleanup();
+        resolve(); // ✅ Stream tiene datos reales
+      }
+    };
+
+    const onExit = (code) => {
+      cleanup();
+      if (resolved) return;
+      if (bytesReceived > 0) {
+        // Proceso terminó pero envió algo → puede ser pista corta, aceptar
+        resolve();
+      } else {
+        reject(new Error(`yt-dlp terminó sin datos (código ${code})`));
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        cleanup();
+        if (bytesReceived > 0) {
+          resolve(); // Recibió algo, aceptar aunque sea poco
+        } else {
+          proc.kill('SIGKILL');
+          reject(new Error(`Timeout: no se recibieron datos de yt-dlp en ${timeoutMs}ms`));
+        }
+      }
+    }, timeoutMs);
+
+    if (proc.stdout) {
+      proc.stdout.on('data', onData);
+    } else {
+      reject(new Error('yt-dlp no tiene stdout'));
+      return;
+    }
+
+    proc.once('exit', onExit);
+  });
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
-// CLASE PRINCIPAL: GESTOR DE ESTADO DE VOZ
+// CLASE PRINCIPAL
 // ─────────────────────────────────────────────────────────────────────────────
 class VoiceStateManager {
   constructor() {
@@ -258,7 +299,7 @@ class VoiceStateManager {
     this.currentResource = null;
     this.subscription = null;
 
-    this.currentTrack = null; // { title, url, requestedBy, channelName }
+    this.currentTrack = null; // { title, url, source, requestedBy, channelName }
     this.isLooping = false;
     this.volume = config.DEFAULT_VOLUME;
     this.status = 'idle'; // 'idle' | 'playing' | 'paused' | 'interrupted_by_tts'
@@ -268,14 +309,19 @@ class VoiceStateManager {
     this.lastChannel = null;
     this.intentionalDisconnect = false;
 
-    this.setupPlayerEvents();
+    // Anti-loop-infinito
+    this._loopConsecutiveFailures = 0;
+    this._lastLoopStartTime = 0;
+    this._loopCooldownMs = 8000; // Mínimo 8s entre reinicios de loop
+
+    this._setupPlayerEvents();
   }
 
-  /** Configura los eventos del AudioPlayer */
-  setupPlayerEvents() {
+  _setupPlayerEvents() {
     this.audioPlayer.on(AudioPlayerStatus.Playing, () => {
       this.status = 'playing';
       this.retryCount = 0;
+      this._loopConsecutiveFailures = 0; // Reset fallos al reproducir correctamente
     });
 
     this.audioPlayer.on(AudioPlayerStatus.Paused, () => {
@@ -286,15 +332,32 @@ class VoiceStateManager {
 
     this.audioPlayer.on(AudioPlayerStatus.Idle, async () => {
       if (this.isLooping && this.currentTrack && this.status !== 'interrupted_by_tts') {
+        // ── Cooldown: evitar loops más rápidos que _loopCooldownMs ──
+        const now = Date.now();
+        const elapsed = now - this._lastLoopStartTime;
+        if (elapsed < this._loopCooldownMs) {
+          const wait = this._loopCooldownMs - elapsed;
+          console.log(`⏱️ [LOOP] Esperando ${wait}ms antes de reiniciar (anti-bucle)...`);
+          await new Promise(r => setTimeout(r, wait));
+        }
+
+        // ── Demasiados fallos consecutivos: pausa el loop ──
+        if (this._loopConsecutiveFailures >= 3) {
+          console.error(`🛑 [LOOP] ${this._loopConsecutiveFailures} fallos consecutivos. Pausando 30s...`);
+          this.status = 'idle';
+          await new Promise(r => setTimeout(r, 30000));
+          this._loopConsecutiveFailures = 0;
+          if (!this.isLooping || !this.currentTrack) return;
+        }
+
         try {
-          // LOOP 24/7: Re-resolver la URL en cada ciclo porque las URLs pre-firmadas expiran.
-          // Pasar la fuente que funcionó la vez anterior para intentarla primero.
-          const loopQuery = this.currentTrack.url;          // URL/query original (YouTube, búsqueda)
-          const preferredSource = this.currentTrack.source || 'youtube';
-          console.log(`🔁 [LOOP] Reiniciando reproducción... (fuente preferida: ${preferredSource})`);
-          await this._play(loopQuery, true, preferredSource);
+          this._lastLoopStartTime = Date.now();
+          const { url, source } = this.currentTrack;
+          console.log(`🔁 [LOOP] Reiniciando reproducción... (fuente preferida: ${source || 'youtube'})`);
+          await this._play(url, true, source || 'youtube');
         } catch (err) {
-          console.error('⚠️ [ERROR BUCLE]:', err.message);
+          this._loopConsecutiveFailures++;
+          console.error(`⚠️ [ERROR LOOP] (fallo ${this._loopConsecutiveFailures}/3):`, err.message);
           this.status = 'idle';
         }
       } else if (this.status !== 'interrupted_by_tts') {
@@ -302,20 +365,19 @@ class VoiceStateManager {
       }
     });
 
-    this.audioPlayer.on('error', async (error) => {
-      console.error('⚠️ [ERROR REPRODUCTOR]:', error.message);
+    this.audioPlayer.on('error', async error => {
+      console.error('⚠️ [ERROR PLAYER]:', error.message);
       this._killCurrentProcess();
 
       if (this.retryCount < 1 && this.currentTrack) {
         this.retryCount++;
-        console.log(`🔄 [REINTENTO] Intento ${this.retryCount}/1...`);
+        console.log(`🔄 [REINTENTO ${this.retryCount}/1]...`);
         try {
-          const retryQuery = this.currentTrack.url;
-          const preferredSource = this.currentTrack.source || 'youtube';
-          await this._play(retryQuery, true, preferredSource);
+          const { url, source } = this.currentTrack;
+          await this._play(url, true, source || 'youtube');
           return;
-        } catch (retryErr) {
-          console.error('⚠️ [REINTENTO FALLIDO]:', retryErr.message);
+        } catch (e) {
+          console.error('⚠️ [REINTENTO FALLIDO]:', e.message);
         }
       }
 
@@ -324,22 +386,12 @@ class VoiceStateManager {
     });
   }
 
-  /** Mata el proceso FFmpeg/yt-dlp activo si existe */
   _killCurrentProcess() {
-    if (this.currentResource) {
-      if (this.currentResource._ffmpegProcess) {
-        try { this.currentResource._ffmpegProcess.kill(); } catch {}
-      }
-      if (this.currentResource._ytProcess) {
-        try { this.currentResource._ytProcess.kill(); } catch {}
-      }
+    if (this.currentResource && this.currentResource._ytProcess) {
+      try { this.currentResource._ytProcess.kill('SIGKILL'); } catch {}
     }
   }
 
-  /**
-   * Conecta el bot al canal de voz.
-   * @param {import('discord.js').VoiceBasedChannel} channel
-   */
   async connect(channel) {
     if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
       if (this.connection.joinConfig.channelId === channel.id) {
@@ -360,16 +412,16 @@ class VoiceStateManager {
 
     try {
       await entersState(this.connection, VoiceConnectionStatus.Ready, 15_000);
-      console.log(`📡 [VOZ LISTA] Conexión UDP establecida en "${channel.name}".`);
+      console.log(`📡 [VOZ LISTA] Conectado a "${channel.name}".`);
     } catch (e) {
-      console.warn('⚠️ [AVISO VOZ]:', e.message);
+      console.warn('⚠️ [VOZ]:', e.message);
     }
 
     this.subscription = this.connection.subscribe(this.audioPlayer);
 
     this.connection.on(VoiceConnectionStatus.Disconnected, async () => {
       if (this.intentionalDisconnect) return;
-      console.warn('⚠️ [ALERTA VOZ] Conexión interrumpida. Reconectando...');
+      console.warn('⚠️ [VOZ] Desconectado. Reconectando...');
       try {
         await Promise.race([
           entersState(this.connection, VoiceConnectionStatus.Signalling, 5_000),
@@ -380,19 +432,21 @@ class VoiceStateManager {
           try {
             this.connection.rejoin();
             await entersState(this.connection, VoiceConnectionStatus.Ready, 5_000);
-            console.log('✅ [RECONEXIÓN] Voz restablecida.');
+            console.log('✅ [VOZ] Reconectado.');
             return;
-          } catch (rejoinErr) {
-            console.error('⚠️ [FALLO REJOIN]:', rejoinErr.message);
+          } catch (e) {
+            console.error('⚠️ [REJOIN]:', e.message);
           }
         }
         if (this.lastChannel && (this.status === 'playing' || this.status === 'paused')) {
           try {
             this.destroy();
             await this.connect(this.lastChannel);
-            if (this.currentTrack) await this._play(this.currentTrack.url, true);
-          } catch (err) {
-            console.error('⚠️ [ERROR RESTAURACIÓN]:', err.message);
+            if (this.currentTrack) {
+              await this._play(this.currentTrack.url, true, this.currentTrack.source);
+            }
+          } catch (e) {
+            console.error('⚠️ [RESTAURACIÓN]:', e.message);
             this.destroy();
           }
         } else {
@@ -405,11 +459,10 @@ class VoiceStateManager {
   }
 
   /**
-   * Método interno de reproducción: resuelve la fuente y la reproduce.
-   * @param {string} query - URL de YouTube, URL directa, o búsqueda de texto
+   * Método interno de reproducción.
+   * @param {string} query           - URL de YouTube o búsqueda
    * @param {boolean} isRetry
-   * @param {string} preferredSource - 'youtube' | 'soundcloud' — fuente a intentar primero
-   * @returns {Promise<{title, resolvedUrl}>}
+   * @param {string} preferredSource - Fuente preferida: 'youtube' | 'soundcloud'
    */
   async _play(query, isRetry = false, preferredSource = 'youtube') {
     this._killCurrentProcess();
@@ -420,19 +473,18 @@ class VoiceStateManager {
       !query.includes('youtu.be') &&
       !query.includes('soundcloud.com');
 
-    let resource, title, resolvedUrl, source;
+    let resource, title, source;
 
     if (isDirectStream) {
-      // Radio / MP3 directo: FFmpeg puede leerlo directamente sin yt-dlp
-      resource = createFfmpegResource(query);
+      // Radio / MP3 directo: yt-dlp puede hacer pipe también
+      const { resource: r } = createYtdlpPipeResource(query);
+      resource = r;
       title = 'Transmisión de Radio Táctica';
-      resolvedUrl = query;
       source = 'direct';
     } else {
-      const resolved = await resolveAudioStream(query, preferredSource);
+      const resolved = await resolveStream(query, preferredSource);
       resource = resolved.resource;
       title = resolved.title;
-      resolvedUrl = resolved.resolvedUrl || query;
       source = resolved.source;
     }
 
@@ -440,18 +492,20 @@ class VoiceStateManager {
       resource.volume.setVolume(this.volume);
     }
 
-    resource.playStream.on('error', (err) => {
-      console.error('⚠️ [ERROR STREAM]:', err.message);
+    resource.playStream.on('error', err => {
+      // Solo loggear si no es el error de "stream destruido" normal al parar
+      if (!err.message.includes('destroyed')) {
+        console.error('⚠️ [STREAM ERROR]:', err.message);
+      }
     });
 
     this.currentResource = resource;
     if (!isRetry) this.retryCount = 0;
 
-    // Actualizar currentTrack con source y resolvedUrl
+    // Actualizar currentTrack con fuente resuelta (para loops inteligentes)
     if (this.currentTrack) {
-      this.currentTrack.resolvedUrl = resolvedUrl;
       this.currentTrack.title = title;
-      this.currentTrack.source = source; // 'youtube' | 'soundcloud' | 'direct'
+      this.currentTrack.source = source;
     }
 
     if (this.connection) {
@@ -459,34 +513,23 @@ class VoiceStateManager {
     }
 
     this.audioPlayer.play(resource);
-    return { title, resolvedUrl };
+    return title;
   }
 
   // ── API pública ──────────────────────────────────────────────────────────
 
-  /** Inicia la reproducción desde un comando de usuario */
   async playTrack(url) {
-    const result = await this._play(url, false);
-    // Retornar el título (string) para compatibilidad con commandRouter
-    return typeof result === 'object' ? result.title : result;
+    return await this._play(url, false, 'youtube');
   }
 
-  /** Alias para compatibilidad interna (bucle, reconexión) */
   async streamAudio(url, isRetry = false) {
-    const result = await this._play(url, isRetry);
-    return typeof result === 'object' ? result.title : result;
+    return await this._play(url, isRetry, 'youtube');
   }
 
-  /** Obtiene el título de una pista sin reproducirla */
   async getTrackTitle(url) {
-    try {
-      return await fetchTitle(url);
-    } catch {
-      return 'Transmisión Táctica Militar';
-    }
+    try { return await fetchTitle(url); } catch { return 'Transmisión Táctica'; }
   }
 
-  /** Pausa la música para ceder paso a un TTS */
   pauseForTTS() {
     if (this.status === 'playing') {
       this.audioPlayer.pause();
@@ -496,7 +539,6 @@ class VoiceStateManager {
     return false;
   }
 
-  /** Reanuda la música pausada por TTS */
   resumeAfterTTS() {
     if (this.status === 'interrupted_by_tts') {
       if (this.connection && this.audioPlayer) {
@@ -509,7 +551,6 @@ class VoiceStateManager {
     return false;
   }
 
-  /** Ajusta el volumen (0–100) */
   setVolume(level) {
     const clamped = Math.max(0, Math.min(100, level));
     this.volume = clamped / 100;
@@ -519,7 +560,6 @@ class VoiceStateManager {
     return clamped;
   }
 
-  /** Detiene reproducción y desconecta el bot */
   stopAndDisconnect() {
     this.intentionalDisconnect = true;
     this.isLooping = false;
@@ -530,7 +570,6 @@ class VoiceStateManager {
     this.destroy();
   }
 
-  /** Destruye la conexión de voz de forma segura */
   destroy() {
     if (this.emptyChannelTimeout) {
       clearTimeout(this.emptyChannelTimeout);
@@ -545,27 +584,24 @@ class VoiceStateManager {
     this.currentTrack = null;
   }
 
-  /** Inicia el temporizador de desconexión por canal vacío */
   startEmptyChannelTimer() {
     if (this.emptyChannelTimeout) return;
     const ms = config.EMPTY_CHANNEL_TIMEOUT_MS || 120000;
-    console.log(`⏱️ [AHORRO] Canal vacío. Desconexión en ${ms / 1000}s...`);
+    console.log(`⏱️ [AHORRO] Canal vacío. Desconectando en ${ms / 1000}s...`);
     this.emptyChannelTimeout = setTimeout(() => {
       console.log('🔌 [AHORRO] Desconectando por inactividad.');
       this.stopAndDisconnect();
     }, ms);
   }
 
-  /** Cancela el temporizador si alguien vuelve al canal */
   cancelEmptyChannelTimer() {
     if (this.emptyChannelTimeout) {
-      console.log('🛡️ [AHORRO] Miembro detectado. Temporizador cancelado.');
+      console.log('🛡️ [AHORRO] Temporizador cancelado.');
       clearTimeout(this.emptyChannelTimeout);
       this.emptyChannelTimeout = null;
     }
   }
 
-  /** Estado actual del reproductor */
   getState() {
     return {
       status: this.status,
@@ -578,7 +614,5 @@ class VoiceStateManager {
   }
 }
 
-// Singleton para el servidor
 const voiceManager = new VoiceStateManager();
-
 module.exports = voiceManager;

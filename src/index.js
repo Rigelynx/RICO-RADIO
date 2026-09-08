@@ -11,7 +11,7 @@ const ffmpegPath = require('ffmpeg-static');
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
 }
-const { Client, GatewayIntentBits, ActivityType } = require('discord.js');
+const { Client, GatewayIntentBits, ActivityType, ChannelType } = require('discord.js');
 const config = require('../config');
 const { handleSlashCommand } = require('./handlers/commandRouter');
 const voiceManager = require('./managers/voiceManager');
@@ -81,27 +81,41 @@ client.on('messageCreate', async (message) => {
   // Regla 3: Comprobar si la auto-lectura está activada
   if (!currentConfig.ttsEnabled) return;
 
-  // Regla 4: Comprobar si el mensaje proviene del canal vigilado
-  if (!currentConfig.ttsChannelId || message.channel.id !== currentConfig.ttsChannelId) return;
-
   // Regla 5: Comprobar si el bot está conectado a algún canal de voz en este servidor
   const botVoiceChannel = message.guild.members.me?.voice?.channel;
 
-  if (!botVoiceChannel) {
-    // Si no está conectado, avisar solo una única vez para no saturar el canal de texto
-    if (!hasWarnedDisconnected) {
-      hasWarnedDisconnected = true;
-      await message.channel.send({
-        embeds: [
-          createWarningEmbed(
-            'SILENCIO DE RADIO',
-            '⚠️ El Sargento Rico no puede transmitir este comunicado por voz porque **no está conectado a ningún canal de voz**.\n' +
-            'Usa `/sargento-rico play` o `/sargento-rico decir` para que el Sargento ingrese a tu frecuencia de voz.'
-          )
-        ]
-      }).catch(() => {});
+  // ---- MODO 1: CHAT INTEGRADO DEL CANAL DE VOZ ----
+  // Si el mensaje viene del chat de texto integrado en un canal de voz (GuildVoice),
+  // y el bot está conectado exactamente a ese mismo canal, leerlo automáticamente
+  // sin necesidad de configurar ttsChannelId.
+  const isVoiceChannelChat = message.channel.type === ChannelType.GuildVoice ||
+                             message.channel.type === ChannelType.GuildStageVoice;
+
+  if (isVoiceChannelChat) {
+    // Solo leer si el bot está conectado a ese canal de voz específico
+    if (!botVoiceChannel || botVoiceChannel.id !== message.channel.id) return;
+    // El bot está en ese canal de voz: proceder a leer (saltar al bloque de lectura)
+  } else {
+    // ---- MODO 2: CANAL DE TEXTO VIGILADO (configuración ttsChannelId) ----
+    // Regla 4: Comprobar si el mensaje proviene del canal de texto vigilado configurado
+    if (!currentConfig.ttsChannelId || message.channel.id !== currentConfig.ttsChannelId) return;
+
+    if (!botVoiceChannel) {
+      // Si no está conectado a voz, avisar solo una única vez para no saturar el canal de texto
+      if (!hasWarnedDisconnected) {
+        hasWarnedDisconnected = true;
+        await message.channel.send({
+          embeds: [
+            createWarningEmbed(
+              'SILENCIO DE RADIO',
+              '⚠️ El Sargento Rico no puede transmitir este comunicado por voz porque **no está conectado a ningún canal de voz**.\n' +
+              'Usa `/sargento-rico play` o `/sargento-rico decir` para que el Sargento ingrese a tu frecuencia de voz.'
+            )
+          ]
+        }).catch(() => {});
+      }
+      return;
     }
-    return;
   }
 
   // Si está conectado a voz, resetear la bandera de aviso

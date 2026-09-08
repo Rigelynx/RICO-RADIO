@@ -18,6 +18,7 @@ const voiceManager = require('./managers/voiceManager');
 const ttsManager = require('./managers/ttsManager');
 const storageManager = require('./managers/storageManager');
 const { startWebServer } = require('./web/server');
+const { data: sargentoCommandData } = require('./commands/sargentoRico');
 const { createWarningEmbed } = require('./utils/militaryEmbeds');
 
 // Bandera para avisar solo una vez en el canal si el bot no está en voz
@@ -34,12 +35,23 @@ const client = new Client({
 });
 
 // 2. EVENTO READY (BOT CONECTADO)
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log('====================================================');
   console.log(`🫡 ¡SARGENTO RICO REPORTÁNDOSE AL SERVICIO MILITAR!`);
   console.log(`🎖️ Conectado como: ${client.user.tag}`);
   console.log(`📡 Servidores vigilados: ${client.guilds.cache.size}`);
   console.log('====================================================');
+
+  // Auto-registro de comandos slash en los servidores conectados (disponibilidad instantánea)
+  try {
+    console.log('📡 [COMANDOS] Desplegando comandos slash (/sargento-rico)...');
+    for (const guild of client.guilds.cache.values()) {
+      await guild.commands.set([sargentoCommandData]);
+      console.log(`🎖️ [COMANDOS] ¡Comandos activados exitosamente en: ${guild.name}!`);
+    }
+  } catch (err) {
+    console.error('⚠️ [ERROR REGISTRO COMANDOS]:', err.message);
+  }
 
   // Estado militar en Discord
   client.user.setActivity('Frecuencia USMC • /sargento-rico', {

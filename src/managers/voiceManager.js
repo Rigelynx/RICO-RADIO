@@ -1,17 +1,19 @@
 /**
- * GESTOR DE AUDIO Y VOZ MILITAR - SARGENTO RICO
- * 
- * Administra la conexión a canales de voz mediante @discordjs/voice y youtube-dl-exec.
- * Diseñado para hostings de bajos recursos:
- * - Evita duplicación de conexiones.
- * - Desconexión automática tras 2 minutos con el canal vacío.
- * - Reintento automático de 1 intento ante fallos de conexión o streaming.
- * - Soporte para bucle (loop) infinito y control de volumen.
- * - Soporte para pausar la música cuando entra una transmisión TTS y reanudarla después.
+ * GESTOR DE AUDIO Y VOZ MILITAR - SARGENTO RICO (v4 - FFmpeg Pipe)
+ *
+ * Estrategia de reproducción:
+ *   1. yt-dlp --get-url → obtiene URL directa del audio (rápido, sin datos)
+ *   2. FFmpeg spawn → decodifica la URL a PCM 48kHz y hace pipe a @discordjs/voice
+ *   3. Si YouTube bloquea la IP, UN SOLO intento en SoundCloud (sin bucle)
+ *
+ * Esta es la misma estrategia de DisTube, discord-player y bots de producción.
  */
 
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
+
+// Resolver ruta de ffmpeg-static e inyectarla en el PATH del proceso
 const ffmpegPath = require('ffmpeg-static');
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
@@ -28,13 +30,14 @@ const {
   entersState,
   StreamType
 } = require('@discordjs/voice');
-// youtube-dl-exec: wrapper robusto de yt-dlp para obtener URLs de audio de YouTube
+
 const youtubedl = require('youtube-dl-exec');
 const config = require('../../config');
-const storageManager = require('./storageManager');
 const { createSuccessEmbed, createErrorEmbed, createWarningEmbed } = require('../utils/militaryEmbeds');
 
-// Asegurar permisos de ejecución de yt-dlp y ffmpeg en contenedores Linux (HolyHosting/Pterodactyl)
+// ─────────────────────────────────────────────────────────────────────────────
+// PERMISOS LINUX (HolyHosting / Pterodactyl)
+// ─────────────────────────────────────────────────────────────────────────────
 if (process.platform === 'linux') {
   try {
     const candidatePaths = [
@@ -53,108 +56,182 @@ if (process.platform === 'linux') {
   }
 }
 
-/**
- * Busca si existe un archivo de cookies de YouTube en la raíz o en .env
- * @returns {string|null}
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS INTERNOS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Retorna la ruta del archivo cookies.txt si existe */
 function getYoutubeCookiesPath() {
   const customPath = process.env.YOUTUBE_COOKIES_PATH;
-  if (customPath && fs.existsSync(customPath)) {
-    return customPath;
-  }
+  if (customPath && fs.existsSync(customPath)) return customPath;
   const defaultPath = path.join(process.cwd(), 'cookies.txt');
-  if (fs.existsSync(defaultPath)) {
-    return defaultPath;
-  }
+  if (fs.existsSync(defaultPath)) return defaultPath;
   return null;
 }
 
 /**
- * Obtiene la URL de audio directa de un video de YouTube via yt-dlp usando getUrl.
- * Si YouTube bloquea la IP del hosting con "Sign in to confirm you are not a bot",
- * el Sargento Rico conmuta automáticamente al canal de relevo táctico (SoundCloud)
- * para garantizar reproducción continua sin interrupciones ni caídas.
- * @param {string} inputQuery 
- * @returns {Promise<{url: string, title: string}>}
+ * Obtiene solo el título de una pista (sin descargar audio).
+ * Para URLs de YouTube usa oEmbed. Para búsquedas de texto usa yt-dlp --dump-json.
+ * @param {string} query
+ * @returns {Promise<string>}
  */
-async function getYoutubeAudioUrl(inputQuery) {
-  const cookiesPath = getYoutubeCookiesPath();
-  const isDirectUrl = inputQuery.startsWith('http');
-  const target = isDirectUrl ? inputQuery : `ytsearch1:${inputQuery}`;
+async function fetchTitle(query) {
+  const isUrl = query.startsWith('http');
 
-  if (cookiesPath) {
-    console.log(`🍪 [YOUTUBE AUTH] Empleando archivo de cookies táctico: ${cookiesPath}`);
-  }
-
-  // 1. Obtener título oficial de YouTube via API pública oEmbed (nunca es bloqueada por datacenters)
-  let title = 'Transmisión Táctica Militar';
-  if (inputQuery.includes('youtube.com') || inputQuery.includes('youtu.be')) {
+  if (isUrl && (query.includes('youtube.com') || query.includes('youtu.be'))) {
     try {
-      const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(inputQuery)}&format=json`);
-      if (oembedRes.ok) {
-        const oembed = await oembedRes.json();
-        if (oembed.title) title = oembed.title;
+      const res = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.title) return data.title;
       }
     } catch {}
-  } else if (!isDirectUrl) {
-    title = inputQuery;
   }
 
-  // 2. Estrategias de extracción de YouTube
-  const strategies = [
-    { format: 'ba/b', noCheckCertificates: true, ...(cookiesPath ? { cookies: cookiesPath } : {}) },
-    { format: 'ba/b', noCheckCertificates: true },
-    { format: 'bestaudio/best', noCheckCertificates: true },
-    { extractorArgs: 'youtube:player-client=android,web', noCheckCertificates: true },
-    { noCheckCertificates: true }
+  if (!isUrl) {
+    try {
+      const cookiesPath = getYoutubeCookiesPath();
+      const result = await youtubedl(`ytsearch1:${query}`, {
+        dumpSingleJson: true,
+        noWarnings: true,
+        noCallHome: true,
+        noCheckCertificates: true,
+        ...(cookiesPath ? { cookies: cookiesPath } : {})
+      });
+      if (result && result.title) return result.title;
+    } catch {}
+    return query;
+  }
+
+  return 'Transmisión Táctica Militar';
+}
+
+/**
+ * Obtiene la URL directa del stream de audio via yt-dlp --get-url.
+ * NO descarga ni hace pipe de datos de audio — solo devuelve la URL.
+ * @param {string} target - URL o prefijo ytsearch1:/scsearch1:
+ * @param {object} extraArgs - Argumentos extra para yt-dlp
+ * @returns {Promise<string>} URL directa del audio
+ */
+async function getDirectAudioUrl(target, extraArgs = {}) {
+  const cookiesPath = getYoutubeCookiesPath();
+  if (cookiesPath) {
+    console.log(`🍪 [YOUTUBE AUTH] Usando cookies: ${cookiesPath}`);
+  }
+
+  const args = {
+    getUrl: true,
+    format: 'ba/b',
+    noWarnings: true,
+    noCheckCertificates: true,
+    noCallHome: true,
+    ...(cookiesPath ? { cookies: cookiesPath } : {}),
+    ...extraArgs
+  };
+
+  const raw = await youtubedl(target, args);
+  const lines = String(raw).trim().split('\n');
+  const found = lines.find(l => l.trim().startsWith('http'));
+  if (!found) throw new Error('yt-dlp no devolvió una URL de audio válida');
+  return found.trim();
+}
+
+/**
+ * Crea un AudioResource usando FFmpeg para decodificar la URL directa.
+ * FFmpeg lee desde la URL (HTTP), decodifica y escribe PCM s16le a su stdout.
+ * @discordjs/voice lee el PCM y lo encoda a Opus para Discord.
+ *
+ * Esta es la misma técnica que usa DisTube y discord-player internamente.
+ *
+ * @param {string} audioUrl - URL directa del audio (obtenida de yt-dlp)
+ * @returns {import('@discordjs/voice').AudioResource}
+ */
+function createFfmpegResource(audioUrl) {
+  const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
+
+  const ffmpegArgs = [
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    '-i', audioUrl,
+    '-analyzeduration', '0',
+    '-loglevel', 'error',
+    '-f', 's16le',    // PCM signed 16-bit little-endian
+    '-ar', '48000',   // 48kHz (requerido por Discord)
+    '-ac', '2',       // Estéreo
+    'pipe:1'          // Output a stdout
   ];
 
-  let audioUrl = null;
+  const ffmpegProcess = spawn(ffmpegBin, ffmpegArgs, {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
 
-  for (const strat of strategies) {
-    try {
-      const raw = await youtubedl(target, { getUrl: true, ...strat });
-      const lines = String(raw).trim().split('\n');
-      const foundUrl = lines.find(l => l.trim().startsWith('http'));
-      if (foundUrl) {
-        audioUrl = foundUrl.trim();
-        break;
-      }
-    } catch {}
-  }
-
-  if (audioUrl) {
-    return { url: audioUrl, title };
-  }
-
-  // 3. RELEVO TÁCTICO AUTOMÁTICO (SoundCloud)
-  // Si YouTube bloqueó la IP del datacenter de HolyHosting, buscar y transmitir el mismo tema desde SoundCloud
-  console.warn(`📡 [RELEVO TÁCTICO MILITAR] YouTube bloqueó la IP del hosting. Conectando a la frecuencia alternativa (SoundCloud) para: "${title}"...`);
-
-  try {
-    const scQuery = `scsearch1:${title}`;
-    const rawSc = await youtubedl(scQuery, { getUrl: true, noCheckCertificates: true });
-    const lines = String(rawSc).trim().split('\n');
-    const scFoundUrl = lines.find(l => l.trim().startsWith('http'));
-
-    if (scFoundUrl) {
-      console.log(`✅ [RELEVO EXITOSO] Frecuencia alternativa sincronizada para: "${title}"`);
-      return {
-        url: scFoundUrl.trim(),
-        title: `${title} 📻 [Frecuencia de Respaldo]`
-      };
+  // Capturar stderr de FFmpeg para diagnóstico (solo en errores)
+  let ffmpegStderr = '';
+  ffmpegProcess.stderr.on('data', (chunk) => { ffmpegStderr += chunk.toString(); });
+  ffmpegProcess.on('exit', (code) => {
+    if (code !== 0 && ffmpegStderr) {
+      console.warn(`⚠️ [FFMPEG EXIT ${code}]:`, ffmpegStderr.slice(0, 300));
     }
+  });
+
+  const resource = createAudioResource(ffmpegProcess.stdout, {
+    inputType: StreamType.Raw,  // PCM s16le = StreamType.Raw
+    inlineVolume: true
+  });
+
+  // Guardar referencia al proceso para poder matarlo al parar
+  resource._ffmpegProcess = ffmpegProcess;
+
+  return resource;
+}
+
+/**
+ * Resuelve audio de YouTube (o SoundCloud como fallback) y crea un AudioResource.
+ * - Paso 1: yt-dlp --get-url (rápido, sin datos de audio)
+ * - Paso 2: FFmpeg spawn con la URL obtenida
+ * - Si YouTube falla → UN SOLO intento en SoundCloud (sin bucle)
+ *
+ * @param {string} query - URL de YouTube o término de búsqueda
+ * @returns {Promise<{resource: import('@discordjs/voice').AudioResource, title: string, source: string}>}
+ */
+async function resolveAudioStream(query) {
+  const isUrl = query.startsWith('http');
+  const ytTarget = isUrl ? query : `ytsearch1:${query}`;
+
+  const title = await fetchTitle(query);
+
+  // ── Intento 1: YouTube ──
+  try {
+    console.log(`🎵 [BUSCANDO] "${title}" en YouTube...`);
+    const audioUrl = await getDirectAudioUrl(ytTarget);
+    const resource = createFfmpegResource(audioUrl);
+    console.log(`✅ [YOUTUBE] Stream listo: "${title}"`);
+    return { resource, title, source: 'youtube' };
+  } catch (ytErr) {
+    console.warn(`⚠️ [YOUTUBE BLOQUEADO] ${ytErr.message}`);
+  }
+
+  // ── Intento 2: SoundCloud (UNA sola vez, sin reintentos) ──
+  console.warn(`📡 [RELEVO TÁCTICO] Conectando a SoundCloud para: "${title}"...`);
+  try {
+    const audioUrl = await getDirectAudioUrl(`scsearch1:${title}`, { format: 'bestaudio/best' });
+    const resource = createFfmpegResource(audioUrl);
+    console.log(`✅ [SOUNDCLOUD] Stream listo: "${title}"`);
+    return { resource, title: `${title} 📻`, source: 'soundcloud' };
   } catch (scErr) {
-    console.error('⚠️ [ERROR RELEVO SOUNDCLOUD]:', scErr.message);
+    console.error(`❌ [SOUNDCLOUD FALLIDO]: ${scErr.message}`);
   }
 
   throw new Error(
-    'YouTube ha bloqueado la IP del hosting y la frecuencia de respaldo no pudo sintonizar la pista. ' +
-    'Intenta buscar la canción escribiendo su nombre directamente en el comando: /sargento-rico play url: "nombre de la canción"'
+    `No se pudo reproducir "${title}". YouTube bloqueó la IP y SoundCloud tampoco respondió. ` +
+    `Intenta con otro título o una URL directa de audio (mp3/stream de radio).`
   );
 }
 
-// Estructura en memoria del estado de voz por servidor (Single Guild)
+// ─────────────────────────────────────────────────────────────────────────────
+// CLASE PRINCIPAL: GESTOR DE ESTADO DE VOZ
+// ─────────────────────────────────────────────────────────────────────────────
 class VoiceStateManager {
   constructor() {
     this.connection = null;
@@ -162,24 +239,24 @@ class VoiceStateManager {
     this.currentResource = null;
     this.subscription = null;
 
-    // Metadatos de la reproducción actual
     this.currentTrack = null; // { title, url, requestedBy, channelName }
     this.isLooping = false;
-    this.volume = config.DEFAULT_VOLUME; // 0.0 a 1.0 (70% por defecto)
-    this.status = 'idle'; // 'idle', 'playing', 'paused', 'interrupted_by_tts'
+    this.volume = config.DEFAULT_VOLUME;
+    this.status = 'idle'; // 'idle' | 'playing' | 'paused' | 'interrupted_by_tts'
 
-    // Temporizadores de ahorro de recursos
     this.emptyChannelTimeout = null;
     this.retryCount = 0;
+    this.lastChannel = null;
+    this.intentionalDisconnect = false;
 
-    // Inicializar listeners del reproductor
     this.setupPlayerEvents();
   }
 
+  /** Configura los eventos del AudioPlayer */
   setupPlayerEvents() {
     this.audioPlayer.on(AudioPlayerStatus.Playing, () => {
       this.status = 'playing';
-      this.retryCount = 0; // Resetear reintentos tras iniciar reproducción exitosa
+      this.retryCount = 0;
     });
 
     this.audioPlayer.on(AudioPlayerStatus.Paused, () => {
@@ -189,12 +266,11 @@ class VoiceStateManager {
     });
 
     this.audioPlayer.on(AudioPlayerStatus.Idle, async () => {
-      // Si la música terminó de forma natural y está en bucle
       if (this.isLooping && this.currentTrack && this.status !== 'interrupted_by_tts') {
         try {
-          await this.streamAudio(this.currentTrack.url, true);
-        } catch (error) {
-          console.error('⚠️ [ERROR BUCLE] No se pudo repetir la pista:', error.message);
+          await this._play(this.currentTrack.url, true);
+        } catch (err) {
+          console.error('⚠️ [ERROR BUCLE]:', err.message);
           this.status = 'idle';
         }
       } else if (this.status !== 'interrupted_by_tts') {
@@ -203,17 +279,17 @@ class VoiceStateManager {
     });
 
     this.audioPlayer.on('error', async (error) => {
-      console.error('⚠️ [ERROR REPRODUCTOR]', error.message);
+      console.error('⚠️ [ERROR REPRODUCTOR]:', error.message);
+      this._killCurrentProcess();
 
-      // Reintento automático de 1 intento antes de fallar
       if (this.retryCount < 1 && this.currentTrack) {
         this.retryCount++;
-        console.log(`🔄 [REINTENTO MILITAR] Reintentando transmisión (Intento ${this.retryCount}/1)...`);
+        console.log(`🔄 [REINTENTO] Intento ${this.retryCount}/1...`);
         try {
-          await this.streamAudio(this.currentTrack.url, true);
+          await this._play(this.currentTrack.url, true);
           return;
-        } catch (retryError) {
-          console.error('⚠️ [ERROR REINTENTO]', retryError.message);
+        } catch (retryErr) {
+          console.error('⚠️ [REINTENTO FALLIDO]:', retryErr.message);
         }
       }
 
@@ -222,12 +298,23 @@ class VoiceStateManager {
     });
   }
 
+  /** Mata el proceso FFmpeg/yt-dlp activo si existe */
+  _killCurrentProcess() {
+    if (this.currentResource) {
+      if (this.currentResource._ffmpegProcess) {
+        try { this.currentResource._ffmpegProcess.kill(); } catch {}
+      }
+      if (this.currentResource._ytProcess) {
+        try { this.currentResource._ytProcess.kill(); } catch {}
+      }
+    }
+  }
+
   /**
-   * Conecta al bot al canal de voz especificado y espera a que esté listo.
-   * @param {import('discord.js').VoiceBasedChannel} channel 
+   * Conecta el bot al canal de voz.
+   * @param {import('discord.js').VoiceBasedChannel} channel
    */
   async connect(channel) {
-    // Si ya estamos conectados al mismo canal, asegurar suscripción al reproductor
     if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
       if (this.connection.joinConfig.channelId === channel.id) {
         this.subscription = this.connection.subscribe(this.audioPlayer);
@@ -235,7 +322,6 @@ class VoiceStateManager {
       }
     }
 
-    // Guardar referencia del canal para posibles reconexiones automáticas
     this.lastChannel = channel;
     this.intentionalDisconnect = false;
 
@@ -243,57 +329,44 @@ class VoiceStateManager {
       channelId: channel.id,
       guildId: channel.guild.id,
       adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: true // Ensordecerse para ahorrar ancho de banda
+      selfDeaf: true
     });
 
     try {
       await entersState(this.connection, VoiceConnectionStatus.Ready, 15_000);
-      console.log(`📡 [VOZ LISTA] Conexión UDP establecida exitosamente en "${channel.name}".`);
+      console.log(`📡 [VOZ LISTA] Conexión UDP establecida en "${channel.name}".`);
     } catch (e) {
-      console.warn('⚠️ [AVISO VOZ] Espera de socket de voz:', e.message);
+      console.warn('⚠️ [AVISO VOZ]:', e.message);
     }
 
     this.subscription = this.connection.subscribe(this.audioPlayer);
 
-    // SISTEMA DE AUTO-RECONEXIÓN ANTE CAÍDAS O CAMBIOS DE SERVIDOR DE DISCORD
-    this.connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
-      // Si fue una desconexión intencional (ej: /sargento-rico stop), no reconectar
+    this.connection.on(VoiceConnectionStatus.Disconnected, async () => {
       if (this.intentionalDisconnect) return;
-
-      console.warn('⚠️ [ALERTA DE VOZ] Conexión interrumpida con Discord. Intentando reconexión táctica...');
-
+      console.warn('⚠️ [ALERTA VOZ] Conexión interrumpida. Reconectando...');
       try {
-        // Discord suele reconectar solo si cambia de región el canal de voz
         await Promise.race([
           entersState(this.connection, VoiceConnectionStatus.Signalling, 5_000),
           entersState(this.connection, VoiceConnectionStatus.Connecting, 5_000)
         ]);
-        console.log('✅ [RECONEXIÓN] Reconectado a la señal de Discord con éxito.');
       } catch {
-        // Si no se reconectó en 5s, verificar si fue expulsión o micro-corte de red
         if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
           try {
-            console.log('🔄 [REINTENTO CONEXIÓN] Reintentando unirse al canal de voz táctico...');
             this.connection.rejoin();
             await entersState(this.connection, VoiceConnectionStatus.Ready, 5_000);
-            console.log('✅ [RECONEXIÓN] ¡Voz restablecida exitosamente!');
+            console.log('✅ [RECONEXIÓN] Voz restablecida.');
             return;
           } catch (rejoinErr) {
-            console.error('⚠️ [FALLO REJOIN]', rejoinErr.message);
+            console.error('⚠️ [FALLO REJOIN]:', rejoinErr.message);
           }
         }
-
-        // Si falló el socket actual, crear una conexión limpia si todavía tenemos la pista activa
         if (this.lastChannel && (this.status === 'playing' || this.status === 'paused')) {
-          console.log('🛠️ [RESTAURACIÓN] Creando nueva sesión de voz limpia para continuar la transmisión...');
           try {
             this.destroy();
-            this.connect(this.lastChannel);
-            if (this.currentTrack && this.status === 'playing') {
-              await this.streamAudio(this.currentTrack.url, true);
-            }
-          } catch (cleanErr) {
-            console.error('⚠️ [ERROR RESTAURACIÓN]', cleanErr.message);
+            await this.connect(this.lastChannel);
+            if (this.currentTrack) await this._play(this.currentTrack.url, true);
+          } catch (err) {
+            console.error('⚠️ [ERROR RESTAURACIÓN]:', err.message);
             this.destroy();
           }
         } else {
@@ -306,90 +379,43 @@ class VoiceStateManager {
   }
 
   /**
-   * Reproduce una URL (YouTube o stream directo mp3/aac) o el audio por defecto.
-   * @param {string} url - URL del audio (puede ser YouTube o URL directa)
-   * @param {boolean} isRetry - Indica si es una llamada de reintento
+   * Método interno de reproducción: resuelve la fuente y la reproduce.
+   * @param {string} query - URL de YouTube, URL directa, o búsqueda de texto
+   * @param {boolean} isRetry
+   * @returns {Promise<string>} Título de la pista
    */
-  async streamAudio(url, isRetry = false) {
-    let resource;
+  async _play(query, isRetry = false) {
+    this._killCurrentProcess();
 
-    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+    const isDirectStream =
+      query.startsWith('http') &&
+      !query.includes('youtube.com') &&
+      !query.includes('youtu.be') &&
+      !query.includes('soundcloud.com');
 
-    if (isYouTube) {
-      // Obtener URL directa del audio vía youtube-dl-exec (yt-dlp)
-      const { url: audioUrl } = await getYoutubeAudioUrl(url);
-      resource = createAudioResource(audioUrl, {
-        inputType: StreamType.Arbitrary,
-        inlineVolume: true
-      });
+    let resource, title;
+
+    if (isDirectStream) {
+      // Radio / MP3 directo: FFmpeg puede leerlo directamente
+      resource = createFfmpegResource(query);
+      title = 'Transmisión de Radio Táctica';
     } else {
-      // URL directa de audio (mp3, aac, stream de radio, etc.)
-      resource = createAudioResource(url, {
-        inputType: StreamType.Arbitrary,
-        inlineVolume: true
-      });
+      const resolved = await resolveAudioStream(query);
+      resource = resolved.resource;
+      title = resolved.title;
     }
-
-    // Configurar nivel de volumen inicial
-    if (resource.volume) {
-      resource.volume.setVolume(this.volume);
-    }
-
-    resource.playStream.on('error', err => {
-      console.error('⚠️ [ERROR DECODIFICADOR AUDIO]:', err.message);
-    });
-
-    this.currentResource = resource;
-
-    // Asegurar que la conexión está transmitiendo desde este reproductor
-    if (this.connection) {
-      this.subscription = this.connection.subscribe(this.audioPlayer);
-    }
-
-    this.audioPlayer.play(resource);
-
-    if (!isRetry) {
-      this.retryCount = 0;
-    }
-  }
-
-  /**
-   * Método principal para iniciar reproducción desde un comando de usuario.
-   * Para YouTube: resuelve URL de audio Y título en una sola llamada a yt-dlp.
-   * Para URLs directas: inicia stream directamente y usa la URL como título.
-   * @param {string} url - URL de YouTube o URL directa de audio
-   * @returns {Promise<string>} - Título de la pista
-   */
-  async playTrack(url) {
-    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
-
-    let audioUrl, title;
-    if (isYouTube) {
-      const res = await getYoutubeAudioUrl(url);
-      audioUrl = res.url;
-      title = res.title;
-    } else {
-      audioUrl = url;
-      title = 'Transmisión Táctica Militar (Audio)';
-    }
-
-    const resource = createAudioResource(audioUrl, {
-      inputType: StreamType.Arbitrary,
-      inlineVolume: true
-    });
 
     if (resource.volume) {
       resource.volume.setVolume(this.volume);
     }
 
-    resource.playStream.on('error', err => {
-      console.error('⚠️ [ERROR DECODIFICADOR AUDIO]:', err.message);
+    resource.playStream.on('error', (err) => {
+      console.error('⚠️ [ERROR STREAM]:', err.message);
     });
 
     this.currentResource = resource;
-    this.retryCount = 0;
+    if (!isRetry) this.retryCount = 0;
 
-    // Re-suscribir la conexión de voz al reproductor de audio
     if (this.connection) {
       this.subscription = this.connection.subscribe(this.audioPlayer);
     }
@@ -398,26 +424,28 @@ class VoiceStateManager {
     return title;
   }
 
-  /**
-   * Obtiene metadatos legibles del título de la pista via youtube-dl-exec.
-   * @param {string} url 
-   * @returns {Promise<string>}
-   */
-  async getTrackTitle(url) {
-    try {
-      if (url.includes('youtube.com') || url.includes('youtu.be')) {
-        const { title } = await getYoutubeAudioUrl(url);
-        return title || 'Transmisión Táctica Militar (Audio)';
-      }
-    } catch {
-      // Si falla obtener metadatos, usar nombre genérico
-    }
-    return 'Transmisión Táctica Militar (Audio)';
+  // ── API pública ──────────────────────────────────────────────────────────
+
+  /** Inicia la reproducción desde un comando de usuario */
+  async playTrack(url) {
+    return await this._play(url, false);
   }
 
-  /**
-   * Pausa la música actual para permitir que suene una transmisión TTS.
-   */
+  /** Alias para compatibilidad interna (bucle, reconexión) */
+  async streamAudio(url, isRetry = false) {
+    return await this._play(url, isRetry);
+  }
+
+  /** Obtiene el título de una pista sin reproducirla */
+  async getTrackTitle(url) {
+    try {
+      return await fetchTitle(url);
+    } catch {
+      return 'Transmisión Táctica Militar';
+    }
+  }
+
+  /** Pausa la música para ceder paso a un TTS */
   pauseForTTS() {
     if (this.status === 'playing') {
       this.audioPlayer.pause();
@@ -427,9 +455,7 @@ class VoiceStateManager {
     return false;
   }
 
-  /**
-   * Reanuda la música que fue pausada por un TTS.
-   */
+  /** Reanuda la música pausada por TTS */
   resumeAfterTTS() {
     if (this.status === 'interrupted_by_tts') {
       if (this.connection && this.audioPlayer) {
@@ -442,43 +468,35 @@ class VoiceStateManager {
     return false;
   }
 
-  /**
-   * Ajusta el volumen (0 a 100).
-   * @param {number} level 
-   */
+  /** Ajusta el volumen (0–100) */
   setVolume(level) {
-    const clampedLevel = Math.max(0, Math.min(100, level));
-    this.volume = clampedLevel / 100;
+    const clamped = Math.max(0, Math.min(100, level));
+    this.volume = clamped / 100;
     if (this.currentResource && this.currentResource.volume) {
       this.currentResource.volume.setVolume(this.volume);
     }
-    return clampedLevel;
+    return clamped;
   }
 
-  /**
-   * Detiene el audio, limpia recursos y desconecta al bot.
-   */
+  /** Detiene reproducción y desconecta el bot */
   stopAndDisconnect() {
     this.intentionalDisconnect = true;
     this.isLooping = false;
+    this._killCurrentProcess();
     this.currentTrack = null;
     this.status = 'idle';
     this.audioPlayer.stop(true);
     this.destroy();
   }
 
-  /**
-   * Destruye la conexión de voz de forma segura.
-   */
+  /** Destruye la conexión de voz de forma segura */
   destroy() {
     if (this.emptyChannelTimeout) {
       clearTimeout(this.emptyChannelTimeout);
       this.emptyChannelTimeout = null;
     }
     if (this.connection) {
-      try {
-        this.connection.destroy();
-      } catch {}
+      try { this.connection.destroy(); } catch {}
       this.connection = null;
     }
     this.subscription = null;
@@ -486,47 +504,40 @@ class VoiceStateManager {
     this.currentTrack = null;
   }
 
-  /**
-   * Inicia el temporizador de 2 minutos para desconectar si no hay miembros en el canal de voz.
-   */
+  /** Inicia el temporizador de desconexión por canal vacío */
   startEmptyChannelTimer() {
     if (this.emptyChannelTimeout) return;
-
-    const timeoutMs = config.EMPTY_CHANNEL_TIMEOUT_MS || 120000;
-    console.log(`⏱️ [AHORRO RECURSOS] Canal de voz vacío. Desconexión en ${timeoutMs / 1000}s...`);
-
+    const ms = config.EMPTY_CHANNEL_TIMEOUT_MS || 120000;
+    console.log(`⏱️ [AHORRO] Canal vacío. Desconexión en ${ms / 1000}s...`);
     this.emptyChannelTimeout = setTimeout(() => {
-      console.log('🔌 [AHORRO RECURSOS] Desconectando bot por inactividad en canal de voz.');
+      console.log('🔌 [AHORRO] Desconectando por inactividad.');
       this.stopAndDisconnect();
-    }, timeoutMs);
+    }, ms);
   }
 
-  /**
-   * Cancela el temporizador si alguien entra al canal.
-   */
+  /** Cancela el temporizador si alguien vuelve al canal */
   cancelEmptyChannelTimer() {
     if (this.emptyChannelTimeout) {
-      console.log('🛡️ [AHORRO RECURSOS] Miembro detectado en canal de voz. Temporizador cancelado.');
+      console.log('🛡️ [AHORRO] Miembro detectado. Temporizador cancelado.');
       clearTimeout(this.emptyChannelTimeout);
       this.emptyChannelTimeout = null;
     }
   }
 
-  /**
-   * Retorna información del estado actual para el comando nowplaying y la web.
-   */
+  /** Estado actual del reproductor */
   getState() {
     return {
       status: this.status,
       isLooping: this.isLooping,
       volumePercent: Math.round(this.volume * 100),
       currentTrack: this.currentTrack,
-      isConnected: this.connection !== null && this.connection.state.status !== VoiceConnectionStatus.Destroyed
+      isConnected: this.connection !== null &&
+        this.connection.state.status !== VoiceConnectionStatus.Destroyed
     };
   }
 }
 
-// Instancia única (Singleton) para el servidor
+// Singleton para el servidor
 const voiceManager = new VoiceStateManager();
 
 module.exports = voiceManager;

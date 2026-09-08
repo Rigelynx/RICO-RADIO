@@ -13,6 +13,8 @@
 const ffmpegPath = require('ffmpeg-static');
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
+  const ffmpegDir = path.dirname(ffmpegPath);
+  process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH}`;
 }
 
 const {
@@ -25,7 +27,6 @@ const {
   StreamType
 } = require('@discordjs/voice');
 const fs = require('fs');
-const path = require('path');
 // youtube-dl-exec: wrapper robusto de yt-dlp para obtener URLs de audio de YouTube
 const youtubedl = require('youtube-dl-exec');
 const config = require('../../config');
@@ -67,59 +68,47 @@ function getYoutubeCookiesPath() {
 }
 
 /**
- * Obtiene la URL de audio directa de un video de YouTube via yt-dlp.
- * Selecciona el mejor formato de solo-audio disponible.
- * Soporta autenticación mediante archivo cookies.txt para evadir bloqueos de datacenter.
- * @param {string} youtubeUrl 
+ * Obtiene la URL de audio directa de un video de YouTube via yt-dlp usando getUrl (estrategia de producción).
+ * Soporta URLs directas o búsqueda táctica de temas musicales.
+ * @param {string} inputQuery 
  * @returns {Promise<{url: string, title: string}>}
  */
-async function getYoutubeAudioUrl(youtubeUrl) {
+async function getYoutubeAudioUrl(inputQuery) {
   const cookiesPath = getYoutubeCookiesPath();
+  const target = inputQuery.startsWith('http') ? inputQuery : `ytsearch1:${inputQuery}`;
+
   if (cookiesPath) {
     console.log(`🍪 [YOUTUBE AUTH] Empleando archivo de cookies táctico: ${cookiesPath}`);
-  } else {
-    console.log('ℹ️ [YOUTUBE] No se detectó archivo cookies.txt en la raíz. Conectando directo...');
   }
 
-  const baseFlags = {
-    dumpSingleJson: true,
-    noCheckCertificates: true,
-    noWarnings: true,
-    preferFreeFormats: true,
-    extractorArgs: 'youtube:player-client=android,web',
-    format: 'bestaudio/best'
-  };
+  // Estrategias de extracción que usan los bots modernos de Discord:
+  const strategies = [
+    { format: 'ba/b', noCheckCertificates: true, ...(cookiesPath ? { cookies: cookiesPath } : {}) },
+    { format: 'ba/b', noCheckCertificates: true },
+    { format: 'bestaudio/best', noCheckCertificates: true },
+    { extractorArgs: 'youtube:player-client=android,web', noCheckCertificates: true },
+    { noCheckCertificates: true }
+  ];
 
-  const flags = { ...baseFlags };
-  if (cookiesPath) {
-    flags.cookies = cookiesPath;
-  }
+  let lastError = null;
+  let audioUrl = null;
 
-  try {
-    const info = await youtubedl(youtubeUrl, flags);
-    const title = info.title || 'Transmisión Táctica Militar';
-    const audioUrl = info.url;
-
-    if (!audioUrl) {
-      throw new Error('No se pudo extraer la URL directa de audio del video.');
-    }
-
-    return { url: audioUrl, title };
-  } catch (error) {
-    // Si falló con cookies (ej: cookies expiradas o bloqueo web), reintentar automáticamente con cliente Android sin cookies
-    if (cookiesPath) {
-      console.warn('⚠️ [YOUTUBE] Error con cookies.txt, reintentando con cliente táctico Android sin cookies...');
-      try {
-        const fallbackInfo = await youtubedl(youtubeUrl, baseFlags);
-        if (fallbackInfo && fallbackInfo.url) {
-          return { url: fallbackInfo.url, title: fallbackInfo.title || 'Transmisión Táctica Militar' };
-        }
-      } catch (fallbackError) {
-        // Continuar con el error original
+  for (const strat of strategies) {
+    try {
+      const raw = await youtubedl(target, { getUrl: true, ...strat });
+      const lines = String(raw).trim().split('\n');
+      const foundUrl = lines.find(l => l.trim().startsWith('http'));
+      if (foundUrl) {
+        audioUrl = foundUrl.trim();
+        break;
       }
+    } catch (err) {
+      lastError = err;
     }
+  }
 
-    const errMsg = (error.message || '').toLowerCase();
+  if (!audioUrl) {
+    const errMsg = (lastError?.message || '').toLowerCase();
     if (
       errMsg.includes('sign in to confirm') ||
       errMsg.includes('not a bot') ||
@@ -131,8 +120,18 @@ async function getYoutubeAudioUrl(youtubeUrl) {
         'Solución: Sube tu archivo `cookies.txt` al hosting en la carpeta raíz del bot.'
       );
     }
-    throw error;
+    throw new Error(lastError?.message || 'No se pudo decodificar la señal de audio de YouTube.');
   }
+
+  // Obtener título legible de la pista
+  let title = 'Transmisión Táctica Militar';
+  try {
+    const titleRaw = await youtubedl(target, { getTitle: true, noCheckCertificates: true });
+    const cleanTitle = String(titleRaw).trim().split('\n')[0].trim();
+    if (cleanTitle) title = cleanTitle;
+  } catch {}
+
+  return { url: audioUrl, title };
 }
 
 // Estructura en memoria del estado de voz por servidor (Single Guild)

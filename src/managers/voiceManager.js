@@ -81,15 +81,16 @@ async function getYoutubeAudioUrl(youtubeUrl) {
     console.log('ℹ️ [YOUTUBE] No se detectó archivo cookies.txt en la raíz. Conectando directo...');
   }
 
-  const flags = {
+  const baseFlags = {
     dumpSingleJson: true,
     noCheckCertificates: true,
     noWarnings: true,
     preferFreeFormats: true,
-    addHeader: ['referer:youtube.com', 'user-agent:googlebot'],
+    extractorArgs: 'youtube:player-client=android,web',
     format: 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
   };
 
+  const flags = { ...baseFlags };
   if (cookiesPath) {
     flags.cookies = cookiesPath;
   }
@@ -105,6 +106,19 @@ async function getYoutubeAudioUrl(youtubeUrl) {
 
     return { url: audioUrl, title };
   } catch (error) {
+    // Si falló con cookies (ej: cookies expiradas o bloqueo web), reintentar automáticamente con cliente Android sin cookies
+    if (cookiesPath) {
+      console.warn('⚠️ [YOUTUBE] Error con cookies.txt, reintentando con cliente táctico Android sin cookies...');
+      try {
+        const fallbackInfo = await youtubedl(youtubeUrl, baseFlags);
+        if (fallbackInfo && fallbackInfo.url) {
+          return { url: fallbackInfo.url, title: fallbackInfo.title || 'Transmisión Táctica Militar' };
+        }
+      } catch (fallbackError) {
+        // Continuar con el error original
+      }
+    }
+
     const errMsg = (error.message || '').toLowerCase();
     if (
       errMsg.includes('sign in to confirm') ||

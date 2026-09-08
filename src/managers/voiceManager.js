@@ -34,21 +34,22 @@ const config = require('../../config');
 const storageManager = require('./storageManager');
 const { createSuccessEmbed, createErrorEmbed, createWarningEmbed } = require('../utils/militaryEmbeds');
 
-// Asegurar permisos de ejecución de yt-dlp en contenedores Linux (HolyHosting/Pterodactyl)
+// Asegurar permisos de ejecución de yt-dlp y ffmpeg en contenedores Linux (HolyHosting/Pterodactyl)
 if (process.platform === 'linux') {
   try {
     const candidatePaths = [
       path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp'),
-      path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.linux')
+      path.join(process.cwd(), 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp.linux'),
+      path.join(process.cwd(), 'node_modules', 'ffmpeg-static', 'ffmpeg')
     ];
     for (const binP of candidatePaths) {
       if (fs.existsSync(binP)) {
         fs.chmodSync(binP, '755');
-        console.log(`🛡️ [SISTEMA LINUX] Permisos 755 otorgados a yt-dlp en: ${binP}`);
+        console.log(`🛡️ [SISTEMA LINUX] Permisos 755 otorgados en: ${binP}`);
       }
     }
   } catch (e) {
-    console.warn('⚠️ [LINUX CHMOD] No se pudieron aplicar permisos a yt-dlp:', e.message);
+    console.warn('⚠️ [LINUX CHMOD] No se pudieron aplicar permisos:', e.message);
   }
 }
 

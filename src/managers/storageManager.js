@@ -16,7 +16,7 @@ const CONFIG_FILE_PATH = path.join(__dirname, '..', '..', 'data', 'config.json')
 // Configuración por defecto de respaldo
 const DEFAULT_PERSISTENT_DATA = {
   ttsChannelId: null,
-  ttsEnabled: false,
+  ttsEnabled: true,
   ttsLang: config.DEFAULT_TTS_LANG || 'es',
   minRoleName: config.MINIMUM_ADMIN_ROLE_NAME || 'Sargento',
   defaultAudioUrl: config.DEFAULT_AUDIO_URL,

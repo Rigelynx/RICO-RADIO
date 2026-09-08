@@ -155,9 +155,10 @@ async function handlePlay(interaction) {
     // Conectar al canal del usuario
     voiceManager.connect(memberVoiceChannel);
     voiceManager.cancelEmptyChannelTimer();
+    voiceManager.isLooping = isLoop;
 
-    // Obtener título para el embed
-    const trackTitle = await voiceManager.getTrackTitle(targetUrl);
+    // playTrack resuelve el audio Y retorna el título en una sola llamada a yt-dlp
+    const trackTitle = await voiceManager.playTrack(targetUrl);
 
     voiceManager.currentTrack = {
       title: trackTitle,
@@ -165,10 +166,6 @@ async function handlePlay(interaction) {
       requestedBy: interaction.user.tag,
       channelName: memberVoiceChannel.name
     };
-    voiceManager.isLooping = isLoop;
-
-    // Iniciar stream de audio
-    await voiceManager.streamAudio(targetUrl);
 
     const loopText = isLoop ? '🔁 Bucle militar activado (repetición continua)' : '⏹️ Reproducción única';
 
@@ -189,7 +186,7 @@ async function handlePlay(interaction) {
       embeds: [
         createErrorEmbed(
           'ERROR DE TRANSMISIÓN',
-          `No se pudo decodificar la señal de audio de la URL proporcionada.\n**Detalle:** Verifica que el enlace sea accesible públicamente.`
+          `No se pudo decodificar la señal de audio de la URL proporcionada.\n**Detalle:** ${error.message}`
         )
       ]
     });

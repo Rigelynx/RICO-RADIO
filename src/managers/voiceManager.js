@@ -1,7 +1,7 @@
 /**
  * GESTOR DE AUDIO Y VOZ MILITAR - SARGENTO RICO
  * 
- * Administra la conexión a canales de voz mediante @discordjs/voice y play-dl.
+ * Administra la conexión a canales de voz mediante @discordjs/voice y youtube-dl-exec.
  * Diseñado para hostings de bajos recursos:
  * - Evita duplicación de conexiones.
  * - Desconexión automática tras 2 minutos con el canal vacío.
@@ -24,10 +24,37 @@ const {
   entersState,
   StreamType
 } = require('@discordjs/voice');
-const play = require('play-dl');
+// youtube-dl-exec: wrapper robusto de yt-dlp para obtener URLs de audio de YouTube
+const youtubedl = require('youtube-dl-exec');
 const config = require('../../config');
 const storageManager = require('./storageManager');
 const { createSuccessEmbed, createErrorEmbed, createWarningEmbed } = require('../utils/militaryEmbeds');
+
+/**
+ * Obtiene la URL de audio directa de un video de YouTube via yt-dlp.
+ * Selecciona el mejor formato de solo-audio disponible.
+ * @param {string} youtubeUrl 
+ * @returns {Promise<{url: string, title: string}>}
+ */
+async function getYoutubeAudioUrl(youtubeUrl) {
+  const info = await youtubedl(youtubeUrl, {
+    dumpSingleJson: true,
+    noCheckCertificates: true,
+    noWarnings: true,
+    preferFreeFormats: true,
+    addHeader: ['referer:youtube.com', 'user-agent:googlebot'],
+    format: 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
+  });
+
+  const title = info.title || 'Transmisión Táctica Militar';
+  const audioUrl = info.url;
+
+  if (!audioUrl) {
+    throw new Error('No se pudo obtener URL de audio desde YouTube.');
+  }
+
+  return { url: audioUrl, title };
+}
 
 // Estructura en memoria del estado de voz por servidor (Single Guild)
 class VoiceStateManager {
@@ -174,26 +201,25 @@ class VoiceStateManager {
 
   /**
    * Reproduce una URL (YouTube o stream directo mp3/aac) o el audio por defecto.
-   * @param {string} url - URL del audio
+   * @param {string} url - URL del audio (puede ser YouTube o URL directa)
    * @param {boolean} isRetry - Indica si es una llamada de reintento
    */
   async streamAudio(url, isRetry = false) {
-    let streamInfo;
     let resource;
 
-    // Determinar si es enlace de YouTube / SoundCloud o URL directa mp3
-    const isDirectLink = url.match(/\.(mp3|aac|ogg|wav|m4a)(\?.*)?$/i) || (!url.includes('youtube.com') && !url.includes('youtu.be'));
+    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
 
-    if (isDirectLink && !url.includes('youtube.com') && !url.includes('youtu.be')) {
-      resource = createAudioResource(url, {
+    if (isYouTube) {
+      // Obtener URL directa del audio vía youtube-dl-exec (yt-dlp)
+      const { url: audioUrl } = await getYoutubeAudioUrl(url);
+      resource = createAudioResource(audioUrl, {
         inputType: StreamType.Arbitrary,
         inlineVolume: true
       });
     } else {
-      // Usar play-dl para enlaces de YouTube
-      const stream = await play.stream(url);
-      resource = createAudioResource(stream.stream, {
-        inputType: stream.type,
+      // URL directa de audio (mp3, aac, stream de radio, etc.)
+      resource = createAudioResource(url, {
+        inputType: StreamType.Arbitrary,
         inlineVolume: true
       });
     }
@@ -212,17 +238,55 @@ class VoiceStateManager {
   }
 
   /**
-   * Obtiene metadatos legibles del título de la pista.
+   * Método principal para iniciar reproducción desde un comando de usuario.
+   * Para YouTube: resuelve URL de audio Y título en una sola llamada a yt-dlp.
+   * Para URLs directas: inicia stream directamente y usa la URL como título.
+   * @param {string} url - URL de YouTube o URL directa de audio
+   * @returns {Promise<string>} - Título de la pista
+   */
+  async playTrack(url) {
+    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+
+    if (isYouTube) {
+      // Una sola llamada a yt-dlp para obtener URL de audio y título
+      const { url: audioUrl, title } = await getYoutubeAudioUrl(url);
+      const resource = createAudioResource(audioUrl, {
+        inputType: StreamType.Arbitrary,
+        inlineVolume: true
+      });
+      if (resource.volume) {
+        resource.volume.setVolume(this.volume);
+      }
+      this.currentResource = resource;
+      this.retryCount = 0;
+      this.audioPlayer.play(resource);
+      return title;
+    } else {
+      // URL directa: reproducir sin consulta externa
+      const resource = createAudioResource(url, {
+        inputType: StreamType.Arbitrary,
+        inlineVolume: true
+      });
+      if (resource.volume) {
+        resource.volume.setVolume(this.volume);
+      }
+      this.currentResource = resource;
+      this.retryCount = 0;
+      this.audioPlayer.play(resource);
+      return 'Transmisión Táctica Militar (Audio)';
+    }
+  }
+
+  /**
+   * Obtiene metadatos legibles del título de la pista via youtube-dl-exec.
    * @param {string} url 
    * @returns {Promise<string>}
    */
   async getTrackTitle(url) {
     try {
       if (url.includes('youtube.com') || url.includes('youtu.be')) {
-        const info = await play.video_basic_info(url);
-        if (info && info.video_details && info.video_details.title) {
-          return info.video_details.title;
-        }
+        const { title } = await getYoutubeAudioUrl(url);
+        return title || 'Transmisión Táctica Militar (Audio)';
       }
     } catch {
       // Si falla obtener metadatos, usar nombre genérico

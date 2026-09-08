@@ -4,6 +4,11 @@ package-lock.json.backup
 
 # Variables de entorno secretas (Token, IDs de Discord, Clave Web)
 .env
+cookies.txt
+
+# Configuración persistente en tiempo de ejecución (se genera automáticamente)
+data/config.json
+!data/.gitkeep
 
 # Archivos de audio temporales generados por TTS
 temp/*.mp3

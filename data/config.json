@@ -1,8 +1,0 @@
-{
-  "ttsChannelId": null,
-  "ttsEnabled": true,
-  "ttsLang": "es",
-  "minRoleName": "Sargento",
-  "defaultAudioUrl": "https://www.youtube.com/watch?v=kYI0xS4Wp0E",
-  "emptyTimeoutMinutes": 2
-}

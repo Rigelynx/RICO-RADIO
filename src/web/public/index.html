@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sargento Rico • Centro de Mando Táctico USMC</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Escáner / Efecto Radar Militar Superior -->
+  <div class="radar-line"></div>
+
+  <header class="tactical-header">
+    <div class="brand-container">
+      <div class="insignia-box">
+        <span class="insignia-icon">🎖️</span>
+      </div>
+      <div>
+        <h1 class="brand-title">SARGENTO RICO <span class="badge-usmc">USMC TACTICAL</span></h1>
+        <p class="brand-subtitle">Estación de Control de Radio, TTS y Jerarquía Militar</p>
+      </div>
+    </div>
+
+    <div class="system-status-bar">
+      <div class="status-indicator" id="botStatusIndicator">
+        <span class="pulse-dot"></span>
+        <span id="botStatusText">CONECTANDO AL BOT...</span>
+      </div>
+      <div class="status-chip">
+        <span class="chip-label">PING:</span>
+        <span class="chip-val" id="botPing">-- ms</span>
+      </div>
+      <div class="status-chip">
+        <span class="chip-label">VOZ:</span>
+        <span class="chip-val" id="voiceStatus">Desconectado</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="dashboard-container">
+    
+    <!-- BARRA DE CLAVE DE ACCESO TÁCTICO -->
+    <section class="auth-bar-card">
+      <div class="auth-content">
+        <label for="adminKeyInput" class="auth-label">🔐 CLAVE DE ACCESO DE MANDO:</label>
+        <div class="auth-input-group">
+          <input type="password" id="adminKeyInput" placeholder="Introduce la clave militar (WEB_ADMIN_KEY)" value="sargento123">
+          <button id="btnSaveKey" class="btn-tactical btn-secondary">Recordar Clave</button>
+        </div>
+      </div>
+      <div class="auth-hint">
+        * Configurada en tu archivo <code>.env</code> como <code>WEB_ADMIN_KEY</code> para proteger tu servidor contra cambios no autorizados.
+      </div>
+    </section>
+
+    <div class="dashboard-grid">
+      
+      <!-- COLUMNA 1: CONFIGURACIÓN DE PERMISOS Y JERARQUÍA -->
+      <section class="tactical-card">
+        <div class="card-header">
+          <h2 class="card-title">🎖️ JERARQUÍA MILITAR Y PERMISOS</h2>
+          <span class="card-tag">SEGURIDAD</span>
+        </div>
+        <div class="card-body">
+          <p class="section-desc">
+            Define el rango militar mínimo requerido para que un miembro pueda ejecutar órdenes administrativas
+            (<code>tts-canal</code>, <code>tts-toggle</code>, <code>tts-idioma</code>).
+          </p>
+
+          <div class="form-group">
+            <label for="minRoleSelect">Rango Militar Mínimo:</label>
+            <div class="select-wrapper">
+              <select id="minRoleSelect">
+                <option value="Sargento">Cargando roles del servidor...</option>
+              </select>
+            </div>
+            <span class="field-hint">Compara numéricamente la posición del rol más alto del usuario en Discord.</span>
+          </div>
+
+          <div class="hierarchy-preview" id="hierarchyInfoBox">
+            <div class="hierarchy-title">📋 Protocolo de Jerarquía Activo:</div>
+            <div class="hierarchy-text" id="hierarchyExplanation">
+              Cualquier usuario con rango igual o superior al seleccionado tendrá acceso autorizado.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- COLUMNA 2: CONFIGURACIÓN DE AUTO-LECTURA TTS -->
+      <section class="tactical-card">
+        <div class="card-header">
+          <h2 class="card-title">📢 SISTEMA DE VOZ TÁCTICA (TTS)</h2>
+          <span class="card-tag">COMUNICACIONES</span>
+        </div>
+        <div class="card-body">
+          <p class="section-desc">
+            Configuración del canal vigilado para la lectura en voz alta de comunicados del chat.
+          </p>
+
+          <!-- INTERRUPTOR ON/OFF -->
+          <div class="form-group toggle-group">
+            <div>
+              <div class="toggle-label-title">Auto-lectura del Chat:</div>
+              <div class="toggle-label-desc">El Sargento leerá los mensajes que se escriban en el canal asignado.</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="ttsToggleCheckbox">
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <!-- SELECTOR DE CANAL -->
+          <div class="form-group">
+            <label for="ttsChannelSelect">Canal de Texto Vigilado:</label>
+            <div class="select-wrapper">
+              <select id="ttsChannelSelect">
+                <option value="">Cargando canales del servidor...</option>
+              </select>
+            </div>
+            <span class="field-hint">Solo se procesarán mensajes enviados en esta frecuencia de radio.</span>
+          </div>
+
+          <!-- SELECTOR DE IDIOMA -->
+          <div class="form-group">
+            <label for="ttsLangSelect">Idioma del Sintetizador de Voz:</label>
+            <div class="select-wrapper">
+              <select id="ttsLangSelect">
+                <option value="es">🇪🇸 Español (es)</option>
+                <option value="en">🇺🇸 English (en)</option>
+                <option value="pt">🇧🇷 Português (pt)</option>
+                <option value="fr">🇫🇷 Français (fr)</option>
+                <option value="de">🇩🇪 Deutsch (de)</option>
+                <option value="it">🇮🇹 Italiano (it)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- COLUMNA 3: CONFIGURACIÓN DE AUDIO Y RECURSOS -->
+      <section class="tactical-card">
+        <div class="card-header">
+          <h2 class="card-title">📻 FRECUENCIA DE RADIO MILITAR</h2>
+          <span class="card-tag">TRANSMISIÓN</span>
+        </div>
+        <div class="card-body">
+          <p class="section-desc">
+            Configura la marcha militar base y el comportamiento de ahorro de recursos del hosting.
+          </p>
+
+          <div class="form-group">
+            <label for="defaultAudioUrlInput">Marcha Militar Base (URL):</label>
+            <input type="text" id="defaultAudioUrlInput" placeholder="https://www.youtube.com/watch?v=...">
+            <span class="field-hint">Audio reproducido al usar <code>/sargento-rico play</code> sin especificar enlace.</span>
+          </div>
+
+          <div class="status-summary-box">
+            <div class="summary-item">
+              <span class="summary-label">Transmisión Activa:</span>
+              <span class="summary-value" id="currentTrackTitle">Silencio de radio</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">Bucle Militar:</span>
+              <span class="summary-value" id="currentTrackLoop">Inactivo</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">Desconexión por Inactividad:</span>
+              <span class="summary-value">2 minutos (Ahorro de RAM)</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- COLUMNA 4: ASISTENTE TÁCTICO DE COMANDOS DISCORD -->
+      <section class="tactical-card card-commands">
+        <div class="card-header">
+          <h2 class="card-title">⚡ ASISTENTE DE COMANDOS DE DISCORD</h2>
+          <span class="card-tag tag-discord">SLASH COMMANDS</span>
+        </div>
+        <div class="card-body">
+          <p class="section-desc">
+            Aquí puedes ver el comando exacto de Discord equivalente a tus configuraciones actuales. 
+            ¡Copia y pégalo en tu canal de Discord cuando lo necesites!
+          </p>
+
+          <div class="command-box">
+            <div class="command-box-header">
+              <span class="cmd-title">COMANDO PARA FIJAR CANAL TTS:</span>
+              <button class="btn-copy" data-target="cmdChannel">Copiar</button>
+            </div>
+            <div class="cmd-display" id="cmdChannel">/sargento-rico tts-canal canal:#general</div>
+          </div>
+
+          <div class="command-box">
+            <div class="command-box-header">
+              <span class="cmd-title">COMANDO PARA TOGGLE ON/OFF:</span>
+              <button class="btn-copy" data-target="cmdToggle">Copiar</button>
+            </div>
+            <div class="cmd-display" id="cmdToggle">/sargento-rico tts-toggle</div>
+          </div>
+
+          <div class="command-box">
+            <div class="command-box-header">
+              <span class="cmd-title">COMANDO PARA CAMBIAR IDIOMA:</span>
+              <button class="btn-copy" data-target="cmdLang">Copiar</button>
+            </div>
+            <div class="cmd-display" id="cmdLang">/sargento-rico tts-idioma codigo:es</div>
+          </div>
+
+          <div class="command-box">
+            <div class="command-box-header">
+              <span class="cmd-title">COMANDOS PRINCIPALES DE TROPA:</span>
+            </div>
+            <div class="quick-commands-list">
+              <code>/sargento-rico play [url] [loop]</code>
+              <code>/sargento-rico decir texto:[mensaje]</code>
+              <code>/sargento-rico nowplaying</code>
+              <code>/sargento-rico stop</code>
+              <code>/sargento-rico volumen nivel:[0-100]</code>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+
+    <!-- BOTÓN DE GUARDADO PRINCIPAL -->
+    <div class="action-footer">
+      <button id="btnSaveAll" class="btn-tactical btn-primary">
+        <span class="btn-icon">💾</span> TRANSMITIR Y APLICAR CAMBIOS AL SARGENTO
+      </button>
+      <div id="saveFeedback" class="save-feedback"></div>
+    </div>
+
+  </main>
+
+  <footer class="tactical-footer">
+    <p>ESTACIÓN TÁCTICA USMC • SISTEMA DE TRANSMISIÓN DE RADIO SARGENTO RICO</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

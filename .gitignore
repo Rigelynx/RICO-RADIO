@@ -1,0 +1,18 @@
+# Dependencias de Node.js
+node_modules/
+package-lock.json.backup
+
+# Variables de entorno secretas (Token, IDs de Discord, Clave Web)
+.env
+
+# Archivos de audio temporales generados por TTS
+temp/*.mp3
+!temp/.gitkeep
+
+# Logs y depuración
+*.log
+npm-debug.log*
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db

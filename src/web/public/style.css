@@ -1,0 +1,623 @@
+/* =========================================================
+   PANEL TÁCTICO MILITAR USMC - SARGENTO RICO (ESTILOS CSS)
+   ========================================================= */
+
+:root {
+  --bg-primary: #0b0e0c;
+  --bg-secondary: #111713;
+  --bg-card: rgba(18, 26, 20, 0.75);
+  --bg-card-hover: rgba(24, 35, 27, 0.85);
+  
+  --border-tactical: rgba(70, 95, 75, 0.4);
+  --border-focus: #3ed17b;
+  
+  --usmc-red: #9e1d1d;
+  --usmc-red-glow: rgba(158, 29, 29, 0.4);
+  --tactical-green: #25a25a;
+  --tactical-green-glow: rgba(37, 162, 90, 0.35);
+  --tactical-gold: #d6a738;
+  
+  --text-main: #e6ede8;
+  --text-muted: #8b9c90;
+  --text-dim: #5c6b60;
+
+  --font-hud: 'Orbitron', -apple-system, sans-serif;
+  --font-body: 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-primary);
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(37, 162, 90, 0.08), transparent 45%),
+    linear-gradient(rgba(11, 14, 12, 0.94), rgba(11, 14, 12, 0.98)),
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 255, 100, 0.015) 3px, rgba(0, 255, 100, 0.015) 3px);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  line-height: 1.5;
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Efecto de línea de radar */
+.radar-line {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--tactical-green), transparent);
+  box-shadow: 0 0 10px var(--tactical-green);
+  opacity: 0.7;
+  animation: radarScan 4s linear infinite;
+  z-index: 100;
+  pointer-events: none;
+}
+
+@keyframes radarScan {
+  0% { transform: translateY(0); opacity: 0; }
+  15% { opacity: 0.8; }
+  85% { opacity: 0.8; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+
+/* Encabezado */
+.tactical-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem 2.5rem;
+  background: rgba(14, 20, 15, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-tactical);
+  flex-wrap: wrap;
+  gap: 1.2rem;
+}
+
+.brand-container {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.insignia-box {
+  width: 52px;
+  height: 52px;
+  background: linear-gradient(135deg, #1c261e, #121a14);
+  border: 1px solid var(--tactical-gold);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 15px rgba(214, 167, 56, 0.2);
+}
+
+.insignia-icon {
+  font-size: 1.8rem;
+}
+
+.brand-title {
+  font-family: var(--font-hud);
+  font-size: 1.5rem;
+  letter-spacing: 2px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.badge-usmc {
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--usmc-red);
+  color: #fff;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  letter-spacing: 1.5px;
+  box-shadow: 0 0 8px var(--usmc-red-glow);
+}
+
+.brand-subtitle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* Barra de estado */
+.system-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-hud);
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+  padding: 0.4rem 0.9rem;
+  background: rgba(37, 162, 90, 0.12);
+  border: 1px solid rgba(37, 162, 90, 0.4);
+  border-radius: 6px;
+  color: var(--tactical-green);
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  background-color: var(--tactical-green);
+  border-radius: 50%;
+  box-shadow: 0 0 8px var(--tactical-green);
+  animation: pulseAnimation 1.8s infinite;
+}
+
+@keyframes pulseAnimation {
+  0% { opacity: 0.4; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.2); }
+  100% { opacity: 0.4; transform: scale(0.9); }
+}
+
+.status-chip {
+  display: flex;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-tactical);
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+}
+
+.chip-label {
+  color: var(--text-dim);
+}
+
+.chip-val {
+  color: var(--tactical-gold);
+}
+
+/* Contenedor principal */
+.dashboard-container {
+  max-width: 1400px;
+  margin: 2rem auto;
+  padding: 0 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+/* Barra de autenticación */
+.auth-bar-card {
+  background: rgba(20, 28, 22, 0.7);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-tactical);
+  border-left: 4px solid var(--tactical-gold);
+  border-radius: 8px;
+  padding: 1.2rem 1.8rem;
+}
+
+.auth-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.auth-label {
+  font-family: var(--font-hud);
+  font-size: 0.9rem;
+  color: var(--tactical-gold);
+  letter-spacing: 1px;
+}
+
+.auth-input-group {
+  display: flex;
+  gap: 0.8rem;
+  flex-grow: 1;
+  max-width: 500px;
+}
+
+.auth-input-group input {
+  flex-grow: 1;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border-tactical);
+  color: #fff;
+  font-family: var(--font-mono);
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  outline: none;
+}
+
+.auth-input-group input:focus {
+  border-color: var(--tactical-gold);
+}
+
+.auth-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.5rem;
+}
+
+/* Grid del Dashboard */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.5rem;
+}
+
+/* Tarjetas tácticas */
+.tactical-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-tactical);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.tactical-card:hover {
+  border-color: rgba(37, 162, 90, 0.6);
+  transform: translateY(-2px);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.2rem 1.5rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid var(--border-tactical);
+}
+
+.card-title {
+  font-family: var(--font-hud);
+  font-size: 0.95rem;
+  color: #fff;
+  letter-spacing: 1px;
+}
+
+.card-tag {
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(37, 162, 90, 0.2);
+  color: var(--tactical-green);
+  border: 1px solid rgba(37, 162, 90, 0.4);
+}
+
+.tag-discord {
+  background: rgba(88, 101, 242, 0.2);
+  color: #7289da;
+  border-color: rgba(88, 101, 242, 0.4);
+}
+
+.card-body {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.3rem;
+  flex-grow: 1;
+}
+
+.section-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* Formularios tácticos */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-group label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.field-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.select-wrapper {
+  position: relative;
+}
+
+select, input[type="text"] {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--border-tactical);
+  color: var(--text-main);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+select:focus, input[type="text"]:focus {
+  border-color: var(--tactical-green);
+  box-shadow: 0 0 8px var(--tactical-green-glow);
+}
+
+/* Interruptor Toggle */
+.toggle-group {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-tactical);
+}
+
+.toggle-label-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #fff;
+}
+
+.toggle-label-desc {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  max-width: 240px;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 52px;
+  height: 28px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #2b332d;
+  transition: 0.3s;
+  border-radius: 28px;
+  border: 1px solid var(--border-tactical);
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #8b9c90;
+  transition: 0.3s;
+  border-radius: 50%;
+}
+
+input:checked + .slider {
+  background-color: var(--tactical-green);
+}
+
+input:checked + .slider:before {
+  transform: translateX(24px);
+  background-color: #ffffff;
+}
+
+/* Previsualización de jerarquía */
+.hierarchy-preview, .status-summary-box {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px dashed var(--border-tactical);
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.hierarchy-title {
+  font-family: var(--font-hud);
+  font-size: 0.75rem;
+  color: var(--tactical-gold);
+  letter-spacing: 1px;
+}
+
+.hierarchy-text {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.summary-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+}
+
+.summary-label {
+  color: var(--text-muted);
+}
+
+.summary-value {
+  color: var(--tactical-green);
+  font-weight: 600;
+  text-align: right;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Caja de Comandos de Discord */
+.command-box {
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border-tactical);
+  border-radius: 6px;
+  padding: 0.8rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.command-box-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cmd-title {
+  font-family: var(--font-hud);
+  font-size: 0.68rem;
+  color: var(--tactical-gold);
+  letter-spacing: 0.5px;
+}
+
+.cmd-display {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: #7289da;
+  word-break: break-all;
+}
+
+.btn-copy {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-tactical);
+  color: var(--text-main);
+  font-size: 0.7rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-copy:hover {
+  background: var(--tactical-green);
+  color: #fff;
+}
+
+.quick-commands-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.quick-commands-list code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+
+/* Botones y pie de acción */
+.action-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.btn-tactical {
+  font-family: var(--font-hud);
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  padding: 1.1rem 2.5rem;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--usmc-red), #771212);
+  color: #fff;
+  font-size: 1rem;
+  box-shadow: 0 4px 20px var(--usmc-red-glow);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #b82222, var(--usmc-red));
+  box-shadow: 0 6px 25px rgba(184, 34, 34, 0.6);
+  transform: translateY(-2px);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+  border: 1px solid var(--border-tactical);
+  font-size: 0.8rem;
+  padding: 0.6rem 1.2rem;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.save-feedback {
+  font-size: 0.9rem;
+  font-weight: 500;
+  min-height: 24px;
+  text-align: center;
+}
+
+.feedback-success {
+  color: var(--tactical-green);
+}
+
+.feedback-error {
+  color: #ff5252;
+}
+
+/* Pie de página */
+.tactical-footer {
+  text-align: center;
+  padding: 2rem;
+  font-family: var(--font-hud);
+  font-size: 0.75rem;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border-tactical);
+  background: rgba(11, 14, 12, 0.8);
+  margin-top: 3rem;
+}
+
+@media (max-width: 768px) {
+  .tactical-header {
+    padding: 1.2rem;
+  }
+  .dashboard-container {
+    padding: 0 1rem;
+  }
+  .auth-input-group {
+    max-width: 100%;
+  }
+}

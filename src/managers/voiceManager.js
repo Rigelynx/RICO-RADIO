@@ -87,7 +87,7 @@ async function getYoutubeAudioUrl(youtubeUrl) {
     noWarnings: true,
     preferFreeFormats: true,
     extractorArgs: 'youtube:player-client=android,web',
-    format: 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
+    format: 'bestaudio/best'
   };
 
   const flags = { ...baseFlags };

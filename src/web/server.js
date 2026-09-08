@@ -143,9 +143,11 @@ function startWebServer(client) {
     }
   });
 
-  // Iniciar escucha del servidor HTTP
-  const server = app.listen(port, () => {
-    console.log(`🌐 [PANEL TÁCTICO WEB] Servidor en línea en: http://localhost:${port}`);
+  // Iniciar escucha del servidor HTTP vinculando a 0.0.0.0 para acceso externo
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`🌐 [PANEL TÁCTICO WEB] Servidor en línea en el puerto ${port}`);
+    console.log(`🔗 Acceso local: http://localhost:${port}`);
+    console.log(`🔗 Acceso desde tu navegador (Hosting): Usa la IP/dominio de tu host con el puerto :${port}`);
   });
 
   return server;

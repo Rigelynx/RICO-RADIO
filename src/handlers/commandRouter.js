@@ -152,8 +152,8 @@ async function handlePlay(interaction) {
   const isLoop = interaction.options.getBoolean('loop') || false;
 
   try {
-    // Conectar al canal del usuario
-    voiceManager.connect(memberVoiceChannel);
+    // Conectar al canal del usuario y esperar a que el socket de voz esté listo
+    await voiceManager.connect(memberVoiceChannel);
     voiceManager.cancelEmptyChannelTimer();
     voiceManager.isLooping = isLoop;
 

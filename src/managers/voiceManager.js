@@ -222,13 +222,14 @@ class VoiceStateManager {
   }
 
   /**
-   * Conecta al bot al canal de voz especificado.
+   * Conecta al bot al canal de voz especificado y espera a que esté listo.
    * @param {import('discord.js').VoiceBasedChannel} channel 
    */
-  connect(channel) {
-    // Si ya estamos conectados al mismo canal, reutilizar
+  async connect(channel) {
+    // Si ya estamos conectados al mismo canal, asegurar suscripción al reproductor
     if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
       if (this.connection.joinConfig.channelId === channel.id) {
+        this.subscription = this.connection.subscribe(this.audioPlayer);
         return this.connection;
       }
     }
@@ -243,6 +244,13 @@ class VoiceStateManager {
       adapterCreator: channel.guild.voiceAdapterCreator,
       selfDeaf: true // Ensordecerse para ahorrar ancho de banda
     });
+
+    try {
+      await entersState(this.connection, VoiceConnectionStatus.Ready, 15_000);
+      console.log(`📡 [VOZ LISTA] Conexión UDP establecida exitosamente en "${channel.name}".`);
+    } catch (e) {
+      console.warn('⚠️ [AVISO VOZ] Espera de socket de voz:', e.message);
+    }
 
     this.subscription = this.connection.subscribe(this.audioPlayer);
 
@@ -326,7 +334,17 @@ class VoiceStateManager {
       resource.volume.setVolume(this.volume);
     }
 
+    resource.playStream.on('error', err => {
+      console.error('⚠️ [ERROR DECODIFICADOR AUDIO]:', err.message);
+    });
+
     this.currentResource = resource;
+
+    // Asegurar que la conexión está transmitiendo desde este reproductor
+    if (this.connection) {
+      this.subscription = this.connection.subscribe(this.audioPlayer);
+    }
+
     this.audioPlayer.play(resource);
 
     if (!isRetry) {
@@ -344,34 +362,39 @@ class VoiceStateManager {
   async playTrack(url) {
     const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
 
+    let audioUrl, title;
     if (isYouTube) {
-      // Una sola llamada a yt-dlp para obtener URL de audio y título
-      const { url: audioUrl, title } = await getYoutubeAudioUrl(url);
-      const resource = createAudioResource(audioUrl, {
-        inputType: StreamType.Arbitrary,
-        inlineVolume: true
-      });
-      if (resource.volume) {
-        resource.volume.setVolume(this.volume);
-      }
-      this.currentResource = resource;
-      this.retryCount = 0;
-      this.audioPlayer.play(resource);
-      return title;
+      const res = await getYoutubeAudioUrl(url);
+      audioUrl = res.url;
+      title = res.title;
     } else {
-      // URL directa: reproducir sin consulta externa
-      const resource = createAudioResource(url, {
-        inputType: StreamType.Arbitrary,
-        inlineVolume: true
-      });
-      if (resource.volume) {
-        resource.volume.setVolume(this.volume);
-      }
-      this.currentResource = resource;
-      this.retryCount = 0;
-      this.audioPlayer.play(resource);
-      return 'Transmisión Táctica Militar (Audio)';
+      audioUrl = url;
+      title = 'Transmisión Táctica Militar (Audio)';
     }
+
+    const resource = createAudioResource(audioUrl, {
+      inputType: StreamType.Arbitrary,
+      inlineVolume: true
+    });
+
+    if (resource.volume) {
+      resource.volume.setVolume(this.volume);
+    }
+
+    resource.playStream.on('error', err => {
+      console.error('⚠️ [ERROR DECODIFICADOR AUDIO]:', err.message);
+    });
+
+    this.currentResource = resource;
+    this.retryCount = 0;
+
+    // Re-suscribir la conexión de voz al reproductor de audio
+    if (this.connection) {
+      this.subscription = this.connection.subscribe(this.audioPlayer);
+    }
+
+    this.audioPlayer.play(resource);
+    return title;
   }
 
   /**

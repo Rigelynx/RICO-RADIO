@@ -14,6 +14,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { PassThrough } = require('stream');
 
 // Inyectar ffmpeg-static en PATH para que @discordjs/voice lo encuentre
 const ffmpegPath = require('ffmpeg-static');
@@ -119,7 +120,7 @@ async function fetchTitle(query) {
  */
 function createYtdlpPipeResource(target, extraArgs = {}) {
   const cookies = getYoutubeCookiesPath();
-  if (cookies) console.log(`🍪 [AUTH] Usando cookies: ${cookies}`);
+  if (cookies) console.log(`🍪 [YOUTUBE AUTH] Usando cookies: ${cookies}`);
 
   const ytProcess = youtubedl.exec(target, {
     output: '-',              // Pipe audio a stdout
@@ -139,7 +140,6 @@ function createYtdlpPipeResource(target, extraArgs = {}) {
   ytProcess.stderr.on('data', chunk => { stderrBuf += chunk.toString(); });
   ytProcess.on('exit', code => {
     if (code !== 0 && stderrBuf) {
-      // Filtrar solo líneas de ERROR, ignorar warnings de deprecación
       const errLines = stderrBuf.split('\n')
         .filter(l => l.includes('ERROR:') || l.includes('error'))
         .slice(0, 3)
@@ -148,15 +148,25 @@ function createYtdlpPipeResource(target, extraArgs = {}) {
     }
   });
 
+  // PassThrough bifurca el stdout:
+  //   ytProcess.stdout → passthrough → createAudioResource
+  // Esto permite que verifyStreamHasData escuche 'data' en el passthrough
+  // SIN interferir con el pipeline interno de @discordjs/voice.
+  const passthrough = new PassThrough();
+  ytProcess.stdout.pipe(passthrough);
+  ytProcess.stdout.on('error', err => passthrough.destroy(err));
+
   // StreamType.Arbitrary: @discordjs/voice usará su FFmpeg interno para decodificar
-  const resource = createAudioResource(ytProcess.stdout, {
+  const resource = createAudioResource(passthrough, {
     inputType: StreamType.Arbitrary,
     inlineVolume: true
   });
 
   resource._ytProcess = ytProcess;
+  resource._passthrough = passthrough; // Exponer para verifyStreamHasData
   return { resource, process: ytProcess };
 }
+
 
 /**
  * Resuelve la fuente de audio con fallback YouTube → SoundCloud.
@@ -181,7 +191,7 @@ async function resolveStream(query, preferredSource = 'youtube') {
         format: 'bestaudio/best',
         noPlaylist: true
       });
-      await verifyStreamHasData(resource._ytProcess, 4096, 12000);
+      await verifyStreamHasData(resource);
       console.log(`✅ [SOUNDCLOUD] Stream renovado: "${cleanTitle}"`);
       return { resource, title, source: 'soundcloud' };
     } catch (e) {
@@ -193,7 +203,7 @@ async function resolveStream(query, preferredSource = 'youtube') {
   try {
     console.log(`🎵 [BUSCANDO] "${title}" en YouTube...`);
     const { resource } = createYtdlpPipeResource(ytTarget);
-    await verifyStreamHasData(resource._ytProcess, 4096, 12000);
+    await verifyStreamHasData(resource);
     console.log(`✅ [YOUTUBE] Stream verificado: "${title}"`);
     return { resource, title, source: 'youtube' };
   } catch (ytErr) {
@@ -209,7 +219,7 @@ async function resolveStream(query, preferredSource = 'youtube') {
         format: 'bestaudio/best',
         noPlaylist: true
       });
-      await verifyStreamHasData(resource._ytProcess, 4096, 12000);
+      await verifyStreamHasData(resource);
       console.log(`✅ [SOUNDCLOUD] Stream listo: "${title}"`);
       return { resource, title: `${title} 📻`, source: 'soundcloud' };
     } catch (scErr) {
@@ -223,26 +233,35 @@ async function resolveStream(query, preferredSource = 'youtube') {
 }
 
 /**
- * Verifica que el proceso yt-dlp produce DATOS REALES en stdout
- * antes de considerarlo un stream válido.
+ * Verifica que el resource de audio tiene DATOS REALES fluyendo.
  *
- * Espera recibir al menos `minBytes` bytes del stdout dentro de `timeoutMs`.
- * Si el proceso muere antes sin datos → rechaza.
- * Si recibe datos suficientes → resuelve (stream es válido).
+ * Monitorea el PassThrough interno (resource._passthrough) — que es una
+ * bifurcación del stdout de yt-dlp — para detectar si el stream produce audio.
+ * El passthrough es seguro de monitorear porque @discordjs/voice ya consume el
+ * extremo "pipe" de stdout, mientras el passthrough recibe los mismos bytes.
  *
- * @param {ChildProcess} proc
- * @param {number} minBytes   - Mínimo de bytes para considerar el stream válido (default: 4096)
- * @param {number} timeoutMs  - Tiempo máximo de espera en ms (default: 12000)
+ * @param {AudioResource} resource  - Resource creado por createYtdlpPipeResource
+ * @param {number} minBytes         - Bytes mínimos para aceptar el stream (default: 2048)
+ * @param {number} timeoutMs        - Tiempo máximo de espera en ms (default: 10000)
  */
-function verifyStreamHasData(proc, minBytes = 4096, timeoutMs = 12000) {
+function verifyStreamHasData(resource, minBytes = 2048, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
+    const passthrough = resource._passthrough;
+    const proc = resource._ytProcess;
+
+    if (!passthrough) {
+      // Sin passthrough → asumir OK (compatibilidad con streams directos)
+      resolve();
+      return;
+    }
+
     let bytesReceived = 0;
     let resolved = false;
 
     const cleanup = () => {
       clearTimeout(timer);
-      if (proc.stdout) proc.stdout.removeListener('data', onData);
-      proc.removeListener('exit', onExit);
+      passthrough.removeListener('data', onData);
+      if (proc) proc.removeListener('exit', onExit);
     };
 
     const onData = (chunk) => {
@@ -258,8 +277,7 @@ function verifyStreamHasData(proc, minBytes = 4096, timeoutMs = 12000) {
       cleanup();
       if (resolved) return;
       if (bytesReceived > 0) {
-        // Proceso terminó pero envió algo → puede ser pista corta, aceptar
-        resolve();
+        resolve(); // Proceso terminó pero envió algo → pista corta, aceptar
       } else {
         reject(new Error(`yt-dlp terminó sin datos (código ${code})`));
       }
@@ -271,22 +289,18 @@ function verifyStreamHasData(proc, minBytes = 4096, timeoutMs = 12000) {
         if (bytesReceived > 0) {
           resolve(); // Recibió algo, aceptar aunque sea poco
         } else {
-          proc.kill('SIGKILL');
-          reject(new Error(`Timeout: no se recibieron datos de yt-dlp en ${timeoutMs}ms`));
+          if (proc) proc.kill('SIGKILL');
+          reject(new Error(`Timeout: sin datos de audio en ${timeoutMs}ms`));
         }
       }
     }, timeoutMs);
 
-    if (proc.stdout) {
-      proc.stdout.on('data', onData);
-    } else {
-      reject(new Error('yt-dlp no tiene stdout'));
-      return;
-    }
-
-    proc.once('exit', onExit);
+    // Escuchar en el passthrough (bifurcación segura del stdout)
+    passthrough.on('data', onData);
+    if (proc) proc.once('exit', onExit);
   });
 }
+
 
 
 // ─────────────────────────────────────────────────────────────────────────────

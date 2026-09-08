@@ -69,20 +69,37 @@ function getYoutubeCookiesPath() {
 }
 
 /**
- * Obtiene la URL de audio directa de un video de YouTube via yt-dlp usando getUrl (estrategia de producción).
- * Soporta URLs directas o búsqueda táctica de temas musicales.
+ * Obtiene la URL de audio directa de un video de YouTube via yt-dlp usando getUrl.
+ * Si YouTube bloquea la IP del hosting con "Sign in to confirm you are not a bot",
+ * el Sargento Rico conmuta automáticamente al canal de relevo táctico (SoundCloud)
+ * para garantizar reproducción continua sin interrupciones ni caídas.
  * @param {string} inputQuery 
  * @returns {Promise<{url: string, title: string}>}
  */
 async function getYoutubeAudioUrl(inputQuery) {
   const cookiesPath = getYoutubeCookiesPath();
-  const target = inputQuery.startsWith('http') ? inputQuery : `ytsearch1:${inputQuery}`;
+  const isDirectUrl = inputQuery.startsWith('http');
+  const target = isDirectUrl ? inputQuery : `ytsearch1:${inputQuery}`;
 
   if (cookiesPath) {
     console.log(`🍪 [YOUTUBE AUTH] Empleando archivo de cookies táctico: ${cookiesPath}`);
   }
 
-  // Estrategias de extracción que usan los bots modernos de Discord:
+  // 1. Obtener título oficial de YouTube via API pública oEmbed (nunca es bloqueada por datacenters)
+  let title = 'Transmisión Táctica Militar';
+  if (inputQuery.includes('youtube.com') || inputQuery.includes('youtu.be')) {
+    try {
+      const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(inputQuery)}&format=json`);
+      if (oembedRes.ok) {
+        const oembed = await oembedRes.json();
+        if (oembed.title) title = oembed.title;
+      }
+    } catch {}
+  } else if (!isDirectUrl) {
+    title = inputQuery;
+  }
+
+  // 2. Estrategias de extracción de YouTube
   const strategies = [
     { format: 'ba/b', noCheckCertificates: true, ...(cookiesPath ? { cookies: cookiesPath } : {}) },
     { format: 'ba/b', noCheckCertificates: true },
@@ -91,7 +108,6 @@ async function getYoutubeAudioUrl(inputQuery) {
     { noCheckCertificates: true }
   ];
 
-  let lastError = null;
   let audioUrl = null;
 
   for (const strat of strategies) {
@@ -103,36 +119,38 @@ async function getYoutubeAudioUrl(inputQuery) {
         audioUrl = foundUrl.trim();
         break;
       }
-    } catch (err) {
-      lastError = err;
-    }
+    } catch {}
   }
 
-  if (!audioUrl) {
-    const errMsg = (lastError?.message || '').toLowerCase();
-    if (
-      errMsg.includes('sign in to confirm') ||
-      errMsg.includes('not a bot') ||
-      errMsg.includes('403') ||
-      errMsg.includes('bot detection')
-    ) {
-      throw new Error(
-        'YouTube ha bloqueado la IP del hosting pidiendo verificación ("Sign in to confirm you are not a bot"). ' +
-        'Solución: Sube tu archivo `cookies.txt` al hosting en la carpeta raíz del bot.'
-      );
-    }
-    throw new Error(lastError?.message || 'No se pudo decodificar la señal de audio de YouTube.');
+  if (audioUrl) {
+    return { url: audioUrl, title };
   }
 
-  // Obtener título legible de la pista
-  let title = 'Transmisión Táctica Militar';
+  // 3. RELEVO TÁCTICO AUTOMÁTICO (SoundCloud)
+  // Si YouTube bloqueó la IP del datacenter de HolyHosting, buscar y transmitir el mismo tema desde SoundCloud
+  console.warn(`📡 [RELEVO TÁCTICO MILITAR] YouTube bloqueó la IP del hosting. Conectando a la frecuencia alternativa (SoundCloud) para: "${title}"...`);
+
   try {
-    const titleRaw = await youtubedl(target, { getTitle: true, noCheckCertificates: true });
-    const cleanTitle = String(titleRaw).trim().split('\n')[0].trim();
-    if (cleanTitle) title = cleanTitle;
-  } catch {}
+    const scQuery = `scsearch1:${title}`;
+    const rawSc = await youtubedl(scQuery, { getUrl: true, noCheckCertificates: true });
+    const lines = String(rawSc).trim().split('\n');
+    const scFoundUrl = lines.find(l => l.trim().startsWith('http'));
 
-  return { url: audioUrl, title };
+    if (scFoundUrl) {
+      console.log(`✅ [RELEVO EXITOSO] Frecuencia alternativa sincronizada para: "${title}"`);
+      return {
+        url: scFoundUrl.trim(),
+        title: `${title} 📻 [Frecuencia de Respaldo]`
+      };
+    }
+  } catch (scErr) {
+    console.error('⚠️ [ERROR RELEVO SOUNDCLOUD]:', scErr.message);
+  }
+
+  throw new Error(
+    'YouTube ha bloqueado la IP del hosting y la frecuencia de respaldo no pudo sintonizar la pista. ' +
+    'Intenta buscar la canción escribiendo su nombre directamente en el comando: /sargento-rico play url: "nombre de la canción"'
+  );
 }
 
 // Estructura en memoria del estado de voz por servidor (Single Guild)

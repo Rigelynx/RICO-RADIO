@@ -94,7 +94,6 @@ async function fetchTitle(query) {
       const result = await youtubedl(`ytsearch1:${query}`, {
         dumpSingleJson: true,
         noWarnings: true,
-        noCallHome: true,
         noCheckCertificates: true,
         ...(cookiesPath ? { cookies: cookiesPath } : {})
       });
@@ -124,7 +123,6 @@ async function getDirectAudioUrl(target, extraArgs = {}) {
     format: 'ba/b',
     noWarnings: true,
     noCheckCertificates: true,
-    noCallHome: true,
     ...(cookiesPath ? { cookies: cookiesPath } : {}),
     ...extraArgs
   };
@@ -153,9 +151,10 @@ function createFfmpegResource(audioUrl) {
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
+    '-reconnect_on_network_error', '1',
     '-i', audioUrl,
-    '-analyzeduration', '0',
     '-loglevel', 'error',
+    '-vn',            // Sin video
     '-f', 's16le',    // PCM signed 16-bit little-endian
     '-ar', '48000',   // 48kHz (requerido por Discord)
     '-ac', '2',       // Estéreo
@@ -192,35 +191,55 @@ function createFfmpegResource(audioUrl) {
  * - Paso 2: FFmpeg spawn con la URL obtenida
  * - Si YouTube falla → UN SOLO intento en SoundCloud (sin bucle)
  *
+ * Las URLs pre-firmadas de YouTube/SoundCloud expiran (horas), por lo que
+ * esta función debe llamarse en CADA ciclo de loop, no cachear la URL.
+ *
  * @param {string} query - URL de YouTube o término de búsqueda
- * @returns {Promise<{resource: import('@discordjs/voice').AudioResource, title: string, source: string}>}
+ * @param {string} [preferredSource] - 'soundcloud' | 'youtube' — fuente preferida a intentar primero
+ * @returns {Promise<{resource, title, source, resolvedUrl}>}
  */
-async function resolveAudioStream(query) {
+async function resolveAudioStream(query, preferredSource = 'youtube') {
   const isUrl = query.startsWith('http');
   const ytTarget = isUrl ? query : `ytsearch1:${query}`;
 
   const title = await fetchTitle(query);
 
-  // ── Intento 1: YouTube ──
+  // ── Si la última vez funcionó SoundCloud, intentarlo PRIMERO ──
+  if (preferredSource === 'soundcloud') {
+    try {
+      console.log(`🎵 [LOOP] Renovando stream de SoundCloud para: "${title.replace(' 📻', '')}"...`);
+      const audioUrl = await getDirectAudioUrl(`scsearch1:${title.replace(' 📻', '')}`, { format: 'bestaudio/best' });
+      const resource = createFfmpegResource(audioUrl);
+      console.log(`✅ [SOUNDCLOUD] Stream renovado: "${title}"`);
+      return { resource, title, source: 'soundcloud', resolvedUrl: audioUrl };
+    } catch (scErr) {
+      console.warn(`⚠️ [SOUNDCLOUD] Falló la renovación, intentando YouTube: ${scErr.message}`);
+    }
+  }
+
+  // ── Intento YouTube ──
   try {
     console.log(`🎵 [BUSCANDO] "${title}" en YouTube...`);
     const audioUrl = await getDirectAudioUrl(ytTarget);
     const resource = createFfmpegResource(audioUrl);
     console.log(`✅ [YOUTUBE] Stream listo: "${title}"`);
-    return { resource, title, source: 'youtube' };
+    return { resource, title, source: 'youtube', resolvedUrl: audioUrl };
   } catch (ytErr) {
-    console.warn(`⚠️ [YOUTUBE BLOQUEADO] ${ytErr.message}`);
+    const errLine = ytErr.message.split('\n').find(l => l.includes('ERROR:')) || ytErr.message.split('\n')[0];
+    console.warn(`⚠️ [YOUTUBE BLOQUEADO] ${errLine}`);
   }
 
-  // ── Intento 2: SoundCloud (UNA sola vez, sin reintentos) ──
-  console.warn(`📡 [RELEVO TÁCTICO] Conectando a SoundCloud para: "${title}"...`);
-  try {
-    const audioUrl = await getDirectAudioUrl(`scsearch1:${title}`, { format: 'bestaudio/best' });
-    const resource = createFfmpegResource(audioUrl);
-    console.log(`✅ [SOUNDCLOUD] Stream listo: "${title}"`);
-    return { resource, title: `${title} 📻`, source: 'soundcloud' };
-  } catch (scErr) {
-    console.error(`❌ [SOUNDCLOUD FALLIDO]: ${scErr.message}`);
+  // ── Fallback SoundCloud (si preferredSource no era soundcloud ya) ──
+  if (preferredSource !== 'soundcloud') {
+    console.warn(`📡 [RELEVO TÁCTICO] Conectando a SoundCloud para: "${title}"...`);
+    try {
+      const audioUrl = await getDirectAudioUrl(`scsearch1:${title}`, { format: 'bestaudio/best' });
+      const resource = createFfmpegResource(audioUrl);
+      console.log(`✅ [SOUNDCLOUD] Stream listo: "${title}"`);
+      return { resource, title: `${title} 📻`, source: 'soundcloud', resolvedUrl: audioUrl };
+    } catch (scErr) {
+      console.error(`❌ [SOUNDCLOUD FALLIDO]: ${scErr.message}`);
+    }
   }
 
   throw new Error(
@@ -268,7 +287,12 @@ class VoiceStateManager {
     this.audioPlayer.on(AudioPlayerStatus.Idle, async () => {
       if (this.isLooping && this.currentTrack && this.status !== 'interrupted_by_tts') {
         try {
-          await this._play(this.currentTrack.url, true);
+          // LOOP 24/7: Re-resolver la URL en cada ciclo porque las URLs pre-firmadas expiran.
+          // Pasar la fuente que funcionó la vez anterior para intentarla primero.
+          const loopQuery = this.currentTrack.url;          // URL/query original (YouTube, búsqueda)
+          const preferredSource = this.currentTrack.source || 'youtube';
+          console.log(`🔁 [LOOP] Reiniciando reproducción... (fuente preferida: ${preferredSource})`);
+          await this._play(loopQuery, true, preferredSource);
         } catch (err) {
           console.error('⚠️ [ERROR BUCLE]:', err.message);
           this.status = 'idle';
@@ -286,7 +310,9 @@ class VoiceStateManager {
         this.retryCount++;
         console.log(`🔄 [REINTENTO] Intento ${this.retryCount}/1...`);
         try {
-          await this._play(this.currentTrack.url, true);
+          const retryQuery = this.currentTrack.url;
+          const preferredSource = this.currentTrack.source || 'youtube';
+          await this._play(retryQuery, true, preferredSource);
           return;
         } catch (retryErr) {
           console.error('⚠️ [REINTENTO FALLIDO]:', retryErr.message);
@@ -382,9 +408,10 @@ class VoiceStateManager {
    * Método interno de reproducción: resuelve la fuente y la reproduce.
    * @param {string} query - URL de YouTube, URL directa, o búsqueda de texto
    * @param {boolean} isRetry
-   * @returns {Promise<string>} Título de la pista
+   * @param {string} preferredSource - 'youtube' | 'soundcloud' — fuente a intentar primero
+   * @returns {Promise<{title, resolvedUrl}>}
    */
-  async _play(query, isRetry = false) {
+  async _play(query, isRetry = false, preferredSource = 'youtube') {
     this._killCurrentProcess();
 
     const isDirectStream =
@@ -393,16 +420,20 @@ class VoiceStateManager {
       !query.includes('youtu.be') &&
       !query.includes('soundcloud.com');
 
-    let resource, title;
+    let resource, title, resolvedUrl, source;
 
     if (isDirectStream) {
-      // Radio / MP3 directo: FFmpeg puede leerlo directamente
+      // Radio / MP3 directo: FFmpeg puede leerlo directamente sin yt-dlp
       resource = createFfmpegResource(query);
       title = 'Transmisión de Radio Táctica';
+      resolvedUrl = query;
+      source = 'direct';
     } else {
-      const resolved = await resolveAudioStream(query);
+      const resolved = await resolveAudioStream(query, preferredSource);
       resource = resolved.resource;
       title = resolved.title;
+      resolvedUrl = resolved.resolvedUrl || query;
+      source = resolved.source;
     }
 
     if (resource.volume) {
@@ -416,24 +447,34 @@ class VoiceStateManager {
     this.currentResource = resource;
     if (!isRetry) this.retryCount = 0;
 
+    // Actualizar currentTrack con source y resolvedUrl
+    if (this.currentTrack) {
+      this.currentTrack.resolvedUrl = resolvedUrl;
+      this.currentTrack.title = title;
+      this.currentTrack.source = source; // 'youtube' | 'soundcloud' | 'direct'
+    }
+
     if (this.connection) {
       this.subscription = this.connection.subscribe(this.audioPlayer);
     }
 
     this.audioPlayer.play(resource);
-    return title;
+    return { title, resolvedUrl };
   }
 
   // ── API pública ──────────────────────────────────────────────────────────
 
   /** Inicia la reproducción desde un comando de usuario */
   async playTrack(url) {
-    return await this._play(url, false);
+    const result = await this._play(url, false);
+    // Retornar el título (string) para compatibilidad con commandRouter
+    return typeof result === 'object' ? result.title : result;
   }
 
   /** Alias para compatibilidad interna (bucle, reconexión) */
   async streamAudio(url, isRetry = false) {
-    return await this._play(url, isRetry);
+    const result = await this._play(url, isRetry);
+    return typeof result === 'object' ? result.title : result;
   }
 
   /** Obtiene el título de una pista sin reproducirla */

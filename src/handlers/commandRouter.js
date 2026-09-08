@@ -157,15 +157,21 @@ async function handlePlay(interaction) {
     voiceManager.cancelEmptyChannelTimer();
     voiceManager.isLooping = isLoop;
 
-    // playTrack resuelve el audio Y retorna el título en una sola llamada a yt-dlp
-    const trackTitle = await voiceManager.playTrack(targetUrl);
-
+    // Asignar currentTrack ANTES de playTrack para que _play() pueda actualizar resolvedUrl
     voiceManager.currentTrack = {
-      title: trackTitle,
+      title: 'Cargando...',
       url: targetUrl,
+      resolvedUrl: null,   // _play() lo actualizará con la URL directa resuelta
       requestedBy: interaction.user.tag,
       channelName: memberVoiceChannel.name
     };
+
+    // playTrack resuelve el audio Y retorna el título en una sola llamada a yt-dlp
+    const trackTitle = await voiceManager.playTrack(targetUrl);
+
+    // Actualizar el título después de la resolución exitosa
+    voiceManager.currentTrack.title = trackTitle;
+
 
     const loopText = isLoop ? '🔁 Bucle militar activado (repetición continua)' : '⏹️ Reproducción única';
 

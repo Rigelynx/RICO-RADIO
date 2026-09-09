@@ -301,41 +301,53 @@ class VoiceStateManager {
         this.subscription = this.connection.subscribe(this.audioPlayer);
         return this.connection;
       }
+
+      // El bot usa un reproductor global: antes de cambiar de canal se debe
+      // cerrar la conexion anterior para evitar dos sockets compitiendo por el audio.
+      try {
+        this.connection.destroy();
+      } catch {}
+      this.connection = null;
+      this.subscription = null;
     }
 
     this.lastChannel = channel;
     this.intentionalDisconnect = false;
 
-    this.connection = joinVoiceChannel({
+    const connection = joinVoiceChannel({
       channelId: channel.id,
       guildId: channel.guild.id,
       adapterCreator: channel.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: false
     });
+    this.connection = connection;
 
     try {
-      await entersState(this.connection, VoiceConnectionStatus.Ready, 15_000);
+      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
       console.log(`📡 [VOZ CONECTADA] Frecuencia militar lista en: "${channel.name}".`);
     } catch (e) {
       console.warn('⚠️ [AVISO CONEXIÓN VOZ]:', e.message);
     }
 
-    this.subscription = this.connection.subscribe(this.audioPlayer);
+    if (this.connection !== connection) return this.connection;
+    this.subscription = connection.subscribe(this.audioPlayer);
 
-    this.connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      // Una conexion anterior puede emitir este evento despues de un cambio de canal.
+      if (this.connection !== connection) return;
       if (this.intentionalDisconnect) return;
       console.warn('⚠️ [VOZ] Conexión interrumpida. Intentando reconexión...');
       try {
         await Promise.race([
-          entersState(this.connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(this.connection, VoiceConnectionStatus.Connecting, 5_000)
+          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
         ]);
       } catch {
-        if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+        if (this.connection === connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
           try {
-            this.connection.rejoin();
-            await entersState(this.connection, VoiceConnectionStatus.Ready, 5_000);
+            connection.rejoin();
+            await entersState(connection, VoiceConnectionStatus.Ready, 5_000);
             console.log('✅ [VOZ] Reconexión exitosa.');
             return;
           } catch (e) {
@@ -343,7 +355,7 @@ class VoiceStateManager {
           }
         }
 
-        if (this.lastChannel && (this.status === 'playing' || this.status === 'paused')) {
+        if (this.connection === connection && this.lastChannel && (this.status === 'playing' || this.status === 'paused')) {
           try {
             this.destroy();
             await this.connect(this.lastChannel);

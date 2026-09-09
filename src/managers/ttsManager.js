@@ -118,8 +118,8 @@ class TTSManager {
     const fileName = `tts_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`;
     const filePath = path.join(this.tempDir, fileName);
 
-    // Conectar el bot si no está conectado aún
-    voiceManager.connect(voiceChannel);
+    // Esperar a que el socket de voz esté listo antes de suscribir el reproductor TTS.
+    await voiceManager.connect(voiceChannel);
 
     // Añadir tarea a la cola
     this.queue.push({

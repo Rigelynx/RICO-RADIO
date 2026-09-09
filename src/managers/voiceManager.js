@@ -292,7 +292,8 @@ class VoiceStateManager {
       channelId: channel.id,
       guildId: channel.guild.id,
       adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: true
+      selfDeaf: true,
+      selfMute: false
     });
 
     try {
@@ -359,6 +360,7 @@ class VoiceStateManager {
 
     // 3. Crear proceso FFmpeg optimizado para stream Opus hacia Discord
     const ffmpegArgs = [
+      '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',

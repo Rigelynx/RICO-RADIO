@@ -17,9 +17,9 @@ module.exports = {
   WEB_PORT: parseInt(process.env.PORT, 10) || 3000,
   WEB_ADMIN_KEY: process.env.WEB_ADMIN_KEY || 'sargento123',
 
-  // Audio militar por defecto si el usuario escribe /sargento-rico play sin link
-  // Enlace directo en MP3 de alta disponibilidad (compatible con Holy Hosting sin bloqueos de YouTube)
-  DEFAULT_AUDIO_URL: 'https://ia800301.us.archive.org/15/items/TheMarinesHymn_583/TheMarinesHymn.mp3',
+  // Audio militar/táctico por defecto si el usuario escribe /sargento-rico play sin link
+  // Emisión 24/7 en vivo de alta disponibilidad (Icecast MP3, 100% compatible con Holy Hosting sin cortes)
+  DEFAULT_AUDIO_URL: 'https://ice2.somafm.com/defcon-128-mp3',
 
   // Nombre del rol militar mínimo requerido para usar comandos de configuración (tts-canal, tts-toggle, tts-idioma)
   // El bot busca este rol en el servidor y compara la jerarquía numérica de roles.

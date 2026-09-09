@@ -1,32 +1,62 @@
 /**
- * GESTOR DE AUDIO Y VOZ MILITAR - SARGENTO RICO (v8 - yt-dlp + FFmpeg Opus)
+ * GESTOR DE AUDIO Y VOZ MILITAR - SARGENTO RICO (v10 - yt-dlp auto-install + FFmpeg Opus)
  *
- * Arquitectura de alto rendimiento:
- *   1. Detección inteligente de fuente:
- *      - URLs de YouTube, SoundCloud y cientos de plataformas soportadas vía yt-dlp (youtube-dl-exec)
- *      - Radios online en vivo y URLs de audio directas (.mp3, .aac, .ogg, Icecast, Shoutcast) vía FFmpeg directo
- *      - Búsquedas por palabras clave vía ytsearch (YouTube)
- *   2. Decodificación de audio a Opus 48kHz estéreo nativo mediante FFmpeg (formato Discord)
- *   3. AudioResource con control dinámico de volumen militar (inlineVolume)
- *   4. Control estricto de procesos para evitar procesos huérfanos de FFmpeg
+ * Arquitectura robusta multi-entorno:
+ *   1. youtube-dl-exec (yt-dlp) → YouTube, SoundCloud, búsquedas por texto
+ *      → En Linux (HolyHosting): binario descargado automáticamente de GitHub
+ *      → En Windows: usa el yt-dlp.exe incluido en node_modules
+ *   2. FFmpeg  → Convierte el stream a Opus 48kHz para Discord
+ *   3. URLs directas → Radios online, Icecast, Shoutcast, archivos mp3/ogg etc.
  */
 
-const path = require('path');
-const fs   = require('fs');
+const path   = require('path');
+const fs     = require('fs');
 const { spawn } = require('child_process');
 
-// Inyectar ffmpeg-static en PATH para que @discordjs/voice y prism-media lo encuentren
-const ffmpegPath = require('ffmpeg-static');
-if (ffmpegPath) {
-  process.env.FFMPEG_PATH = ffmpegPath;
-  const ffmpegDir = path.dirname(ffmpegPath);
-  const currentPath = process.env.PATH || '';
-  if (!currentPath.includes(ffmpegDir)) {
-    process.env.PATH = `${ffmpegDir}${path.delimiter}${currentPath}`;
+// ─── FFMPEG ────────────────────────────────────────────────────────────────────
+const ffmpegStatic = require('ffmpeg-static');
+
+function isCompatibleFfmpegBinary(binaryPath) {
+  try {
+    const header = Buffer.alloc(4);
+    const descriptor = fs.openSync(binaryPath, 'r');
+    fs.readSync(descriptor, header, 0, header.length, 0);
+    fs.closeSync(descriptor);
+
+    if (process.platform === 'linux') return header.toString('hex') === '7f454c46';
+    if (process.platform === 'win32') return header.subarray(0, 2).toString() === 'MZ';
+    return true;
+  } catch {
+    return false;
   }
-  console.log(`🛡️ [FFmpeg] Binario listo: ${ffmpegPath}`);
 }
 
+function resolveFfmpegPath() {
+  if (ffmpegStatic && fs.existsSync(ffmpegStatic)) {
+    if (!isCompatibleFfmpegBinary(ffmpegStatic)) {
+      console.warn('[FFmpeg] El binario de ffmpeg-static no coincide con este sistema. Usando ffmpeg del sistema.');
+      return 'ffmpeg';
+    }
+    if (process.platform === 'linux') {
+      try { fs.chmodSync(ffmpegStatic, '755'); } catch {}
+    }
+    return ffmpegStatic;
+  }
+  return 'ffmpeg';
+}
+
+const ffmpegPath = resolveFfmpegPath();
+
+if (ffmpegPath !== 'ffmpeg') {
+  process.env.FFMPEG_PATH = ffmpegPath;
+  const ffmpegDir = path.dirname(ffmpegPath);
+  if (!(process.env.PATH || '').includes(ffmpegDir)) {
+    process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}`;
+  }
+}
+console.log(`🛡️ [FFmpeg] Ejecutable: ${ffmpegPath}`);
+
+// ─── DISCORD VOICE ────────────────────────────────────────────────────────────
 const {
   joinVoiceChannel,
   createAudioPlayer,
@@ -38,53 +68,50 @@ const {
   StreamType
 } = require('@discordjs/voice');
 
+// ─── FUENTES DE AUDIO ────────────────────────────────────────────────────────
 const youtubedl = require('youtube-dl-exec');
+const { ensureYtDlpBinary } = require('../utils/ytdlpInstaller');
+
+// La primera reproducción espera a que el binario esté listo. Así no se intenta
+// usar el ejecutable incluido para otro sistema operativo durante el arranque.
+let ytdlpExecutor = youtubedl;
+const ytdlpReady = ensureYtDlpBinary()
+  .then(binPath => {
+    const { create } = require('youtube-dl-exec');
+    ytdlpExecutor = create(binPath);
+    console.log(`🎯 [yt-dlp] Binario activo: ${binPath}`);
+  })
+  .catch(error => {
+    console.warn('⚠️ [yt-dlp] Advertencia al resolver binario:', error.message);
+  });
+
 const config = require('../../config');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PERMISOS LINUX (HolyHosting / Pterodactyl / VPS)
+// HELPERS DE DETECCIÓN
 // ─────────────────────────────────────────────────────────────────────────────
-if (process.platform === 'linux' && ffmpegPath) {
-  try {
-    if (fs.existsSync(ffmpegPath)) {
-      fs.chmodSync(ffmpegPath, '755');
-      console.log(`🛡️ [SISTEMA LINUX] Permisos 755 aplicados a FFmpeg: ${ffmpegPath}`);
-    }
-  } catch (e) {
-    console.warn('⚠️ [LINUX CHMOD]:', e.message);
-  }
+
+function isYouTubeUrl(url) {
+  return url.includes('youtube.com') || url.includes('youtu.be');
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS DE DETECCIÓN Y RESOLUCIÓN MULTI-URL
-// ─────────────────────────────────────────────────────────────────────────────
+function isSoundCloudUrl(url) {
+  return url.includes('soundcloud.com');
+}
 
 /**
- * Determina si la URL corresponde a una transmisión directa (radio online o archivo de audio)
+ * Determina si la URL es una radio online o archivo de audio directo.
  * @param {string} url
  * @returns {boolean}
  */
 function isDirectAudioUrl(url) {
   if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
-
-  // Si es YouTube o SoundCloud, delegar en yt-dlp
-  if (
-    url.includes('youtube.com') ||
-    url.includes('youtu.be') ||
-    url.includes('soundcloud.com')
-  ) {
-    return false;
-  }
+  if (isYouTubeUrl(url) || isSoundCloudUrl(url)) return false;
 
   const cleanUrl = url.toLowerCase().split('?')[0];
-
-  // Extensiones directas de audio conocidas
   const directExtensions = ['.mp3', '.ogg', '.aac', '.wav', '.flac', '.opus', '.m4a', '.m3u8'];
-  if (directExtensions.some(ext => cleanUrl.endsWith(ext))) {
-    return true;
-  }
+  if (directExtensions.some(ext => cleanUrl.endsWith(ext))) return true;
 
-  // Palabras clave comunes en radios online e Icecast/Shoutcast
   if (
     url.includes('stream') ||
     url.includes('icecast') ||
@@ -94,94 +121,80 @@ function isDirectAudioUrl(url) {
     url.includes('zeno.fm') ||
     url.includes(':8000') ||
     url.includes(':8080')
-  ) {
-    return true;
-  }
+  ) return true;
 
   return false;
 }
 
 /**
- * Resuelve cualquier enlace (YouTube, SoundCloud, radio, archivo) o término de búsqueda.
+ * Resuelve la fuente de audio y retorna una URL de stream lista para FFmpeg.
+ * - URLs de YouTube/SoundCloud → yt-dlp extrae la URL directa del stream
+ * - Búsquedas de texto → yt-dlp busca en YouTube y extrae la URL
+ * - URLs directas (radios, .mp3) → se pasan directamente a FFmpeg
+ *
  * @param {string} query
- * @returns {Promise<{ streamUrl: string, title: string, isDirect: boolean, webpageUrl: string }>}
+ * @returns {Promise<{ streamUrl: string, title: string, webpageUrl: string }>}
  */
 async function resolveAudioSource(query) {
   const isUrl = query.startsWith('http://') || query.startsWith('https://');
 
-  // 1. Caso: URL directa de radio o archivo de audio
+  // ── CASO 1: URL directa de radio o archivo de audio ────────────────────────
   if (isUrl && isDirectAudioUrl(query)) {
-    console.log(`📡 [TRANSMISIÓN DIRECTA] Detectado stream directo / radio: ${query}`);
+    console.log(`📡 [TRANSMISIÓN DIRECTA] Stream/radio: ${query}`);
     let title = 'Transmisión Táctica Militar';
     try {
-      const parsed = new URL(query);
-      const filename = path.basename(parsed.pathname);
-      if (filename && filename.length > 2) {
-        title = decodeURIComponent(filename);
-      }
+      const filename = path.basename(new URL(query).pathname);
+      if (filename && filename.length > 2) title = decodeURIComponent(filename);
     } catch {}
-    return {
-      streamUrl: query,
-      title,
-      isDirect: true,
-      webpageUrl: query
-    };
+    return { streamUrl: query, title, webpageUrl: query };
   }
 
-  // 2. Caso: URL de YouTube, SoundCloud o búsqueda por palabras clave vía yt-dlp
+  // ── CASO 2: YouTube, SoundCloud o búsqueda vía yt-dlp ─────────────────────
   const targetQuery = isUrl ? query : `ytsearch1:${query}`;
-  console.log(`🔍 [RESOLVIENDO] Procesando audio con yt-dlp para: "${query}"...`);
+  console.log(`🔍 [RESOLVIENDO] yt-dlp procesando: "${query}"...`);
+
+  // Opciones base para youtube-dl-exec
+  const ytdlpOptions = {
+    dumpSingleJson: true,
+    format: 'bestaudio/best',
+    noWarnings: true,
+    preferFreeFormats: true,
+    noCheckCertificates: true
+  };
 
   try {
-    const rawResult = await youtubedl(targetQuery, {
-      dumpSingleJson: true,
-      format: 'bestaudio/best',
-      noWarnings: true,
-      preferFreeFormats: true,
-      noCheckCertificates: true
-    });
+    await ytdlpReady;
+    const rawResult = await ytdlpExecutor(targetQuery, ytdlpOptions);
 
     const entry = (rawResult.entries && rawResult.entries.length > 0)
       ? rawResult.entries[0]
       : rawResult;
 
-    if (!entry) {
-      throw new Error('No se encontraron resultados para la consulta militar.');
-    }
+    if (!entry) throw new Error('Sin resultados.');
 
-    const title = entry.title || 'Transmisión Táctica';
+    const title      = entry.title || 'Transmisión Táctica';
     const webpageUrl = entry.webpage_url || query;
-    let streamUrl = entry.url;
+    let streamUrl    = entry.url;
 
-    // Si por alguna razón entry.url no viene en el dump, extraer la URL directa
     if (!streamUrl) {
-      console.log('🔄 [EXTRACCIÓN SECUNDARIA] Obteniendo enlace directo...');
-      streamUrl = (await youtubedl(webpageUrl, {
+      console.log('🔄 [EXTRACCIÓN URL] Obteniendo enlace directo...');
+      const rawUrl = await ytdlpExecutor(webpageUrl, {
         getUrl: true,
         format: 'bestaudio/best',
         noWarnings: true
-      })).trim();
+      });
+      streamUrl = (typeof rawUrl === 'string' ? rawUrl : rawUrl.toString()).trim();
     }
 
-    console.log(`✅ [SEÑAL IDENTIFICADA] Título: "${title}"`);
-    return {
-      streamUrl,
-      title,
-      isDirect: false,
-      webpageUrl
-    };
+    console.log(`✅ [SEÑAL] Título: "${title}"`);
+    return { streamUrl, title, webpageUrl };
+
   } catch (ytError) {
-    // Si la consulta era una URL pero yt-dlp falló, intentar reproducirla directamente con FFmpeg
     if (isUrl) {
-      console.warn(`⚠️ [FALLO YT-DLP, RELEVO DIRECTO]: ${ytError.message}. Intentando FFmpeg directo...`);
-      return {
-        streamUrl: query,
-        title: 'Frecuencia de Radio Externa',
-        isDirect: true,
-        webpageUrl: query
-      };
+      console.warn(`⚠️ [FALLO YT-DLP → DIRECTO]: ${ytError.message}. Intentando FFmpeg directo...`);
+      return { streamUrl: query, title: 'Frecuencia de Radio Externa', webpageUrl: query };
     }
-    throw new Error(`Fallo táctico al decodificar la transmisión: ${ytError.message}`);
+    throw new Error(`Error al resolver audio: ${ytError.message}`);
   }
 }
 
@@ -360,10 +373,10 @@ class VoiceStateManager {
     // 1. Limpiar FFmpeg y recurso anterior si existían
     this._cleanupFFmpeg();
 
-    // 2. Resolver la fuente de audio (URL directa de stream y título)
+    // 2. Resolver la fuente de audio
     const { streamUrl, title, webpageUrl } = await resolveAudioSource(query);
 
-    // 3. Crear proceso FFmpeg optimizado para stream Opus hacia Discord
+    // 3. Crear proceso FFmpeg: convierte el stream a Opus 48kHz para Discord
     const ffmpegArgs = [
       '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       '-reconnect', '1',
@@ -380,14 +393,14 @@ class VoiceStateManager {
       'pipe:1'
     ];
 
-    let ffmpegExecutable = ffmpegPath || 'ffmpeg';
+    // 4. Lanzar FFmpeg
     let ffmpegProcess;
     try {
-      ffmpegProcess = spawn(ffmpegExecutable, ffmpegArgs, {
+      ffmpegProcess = spawn(ffmpegPath, ffmpegArgs, {
         stdio: ['ignore', 'pipe', 'pipe']
       });
     } catch (spawnErr) {
-      console.warn(`⚠️ [FFmpeg inicial falló]: ${spawnErr.message}. Probando fallback 'ffmpeg'...`);
+      console.warn(`⚠️ [FFmpeg falló con ${ffmpegPath}]: ${spawnErr.message}. Probando 'ffmpeg' del sistema...`);
       ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
         stdio: ['ignore', 'pipe', 'pipe']
       });
@@ -404,7 +417,13 @@ class VoiceStateManager {
       console.error('❌ [FFmpeg PROCESO ERROR]:', err.message);
     });
 
-    // 4. Crear el AudioResource con stream Opus nativo en contenedor Ogg
+    ffmpegProcess.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        console.warn(`⚠️ [FFmpeg] Proceso cerrado con código: ${code}`);
+      }
+    });
+
+    // 5. Crear AudioResource con stream Opus nativo en contenedor Ogg
     const resource = createAudioResource(ffmpegProcess.stdout, {
       inputType: StreamType.OggOpus,
       inlineVolume: true
@@ -416,16 +435,14 @@ class VoiceStateManager {
 
     this.currentResource = resource;
 
-    if (!isRetry) {
-      this.retryCount = 0;
-    }
+    if (!isRetry) this.retryCount = 0;
 
     if (this.currentTrack) {
       this.currentTrack.title = title;
       if (webpageUrl) this.currentTrack.url = webpageUrl;
     }
 
-    // 5. Suscribir y reproducir
+    // 6. Suscribir y reproducir
     if (this.connection) {
       this.subscription = this.connection.subscribe(this.audioPlayer);
     }

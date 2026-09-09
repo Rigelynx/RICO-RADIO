@@ -228,6 +228,11 @@ class VoiceStateManager {
     this.audioPlayer.on(AudioPlayerStatus.Playing, () => {
       this.status = 'playing';
       this.retryCount = 0;
+      console.log('🔊 [AUDIO ENVIÁNDOSE] El reproductor está en estado PLAYING y transmitiendo paquetes.');
+    });
+
+    this.audioPlayer.on(AudioPlayerStatus.Buffering, () => {
+      console.log('⏳ [BUFFERING] Preparando búfer de audio...');
     });
 
     this.audioPlayer.on(AudioPlayerStatus.Paused, () => {
@@ -292,7 +297,7 @@ class VoiceStateManager {
       channelId: channel.id,
       guildId: channel.guild.id,
       adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: true,
+      selfDeaf: false,
       selfMute: false
     });
 

@@ -175,12 +175,17 @@ async function handlePlay(interaction) {
 
     const loopText = isLoop ? '🔁 Bucle militar activado (repetición continua)' : '⏹️ Reproducción única';
 
+    const displayUrl = voiceManager.currentTrack?.url;
+    const pistaText = (displayUrl && displayUrl.startsWith('http'))
+      ? `[${trackTitle}](${displayUrl})`
+      : `**${trackTitle}**`;
+
     await interaction.editReply({
       embeds: [
         createSuccessEmbed(
           'CONTROL DE VOZ ASUMIDO',
           `🫡 **El Sargento Rico ha tomado el control del canal de voz:** \`${memberVoiceChannel.name}\`\n\n` +
-          `📻 **Pista:** [${trackTitle}](${targetUrl})\n` +
+          `📻 **Pista:** ${pistaText}\n` +
           `🔄 **Modo:** ${loopText}\n` +
           `🔊 **Volumen:** ${Math.round(voiceManager.volume * 100)}%`
         )

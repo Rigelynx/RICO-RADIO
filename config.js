@@ -18,8 +18,8 @@ module.exports = {
   WEB_ADMIN_KEY: process.env.WEB_ADMIN_KEY || 'sargento123',
 
   // Audio militar por defecto si el usuario escribe /sargento-rico play sin link
-  // (Himno de los Marines / USMC Hymn oficial o radio militar)
-  DEFAULT_AUDIO_URL: 'https://www.youtube.com/watch?v=kYI0xS4Wp0E',
+  // Enlace directo en MP3 de alta disponibilidad (compatible con Holy Hosting sin bloqueos de YouTube)
+  DEFAULT_AUDIO_URL: 'https://ia800301.us.archive.org/15/items/TheMarinesHymn_583/TheMarinesHymn.mp3',
 
   // Nombre del rol militar mínimo requerido para usar comandos de configuración (tts-canal, tts-toggle, tts-idioma)
   // El bot busca este rol en el servidor y compara la jerarquía numérica de roles.

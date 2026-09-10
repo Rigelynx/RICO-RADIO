@@ -11,7 +11,6 @@
 
 const path   = require('path');
 const fs     = require('fs');
-const { spawn } = require('child_process');
 
 // ─── FFMPEG ────────────────────────────────────────────────────────────────────
 const ffmpegStatic = require('ffmpeg-static');
@@ -64,8 +63,7 @@ const {
   AudioPlayerStatus,
   VoiceConnectionStatus,
   NoSubscriberBehavior,
-  entersState,
-  StreamType
+  entersState
 } = require('@discordjs/voice');
 
 // ─── FUENTES DE AUDIO ────────────────────────────────────────────────────────
@@ -225,6 +223,9 @@ class VoiceStateManager {
     this.retryCount = 0;
     this.lastChannel = null;
     this.intentionalDisconnect = false;
+    this.connectPromise = null;
+    this.reconnectTimer = null;
+    this.reconnectAttempts = 0;
 
     this._setupPlayerEvents();
   }
@@ -300,7 +301,29 @@ class VoiceStateManager {
    * @param {import('discord.js').VoiceBasedChannel} channel 
    */
   async connect(channel) {
-    if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+    if (this.connectPromise) {
+      await this.connectPromise;
+      if (this.connection &&
+          this.connection.state.status !== VoiceConnectionStatus.Destroyed &&
+          this.connection.joinConfig.channelId === channel.id) {
+        this.subscription = this.connection.subscribe(this.audioPlayer);
+        return this.connection;
+      }
+    }
+
+    const operation = this._connect(channel);
+    this.connectPromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.connectPromise === operation) this.connectPromise = null;
+    }
+  }
+
+  async _connect(channel) {
+    if (this.connection &&
+        this.connection.state.status !== VoiceConnectionStatus.Destroyed &&
+        this.connection.state.status !== VoiceConnectionStatus.Disconnected) {
       if (this.connection.joinConfig.channelId === channel.id) {
         this.subscription = this.connection.subscribe(this.audioPlayer);
         return this.connection;
@@ -337,46 +360,49 @@ class VoiceStateManager {
     if (this.connection !== connection) return this.connection;
     this.subscription = connection.subscribe(this.audioPlayer);
 
-    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    connection.on(VoiceConnectionStatus.Disconnected, () => {
       // Una conexion anterior puede emitir este evento despues de un cambio de canal.
       if (this.connection !== connection) return;
       if (this.intentionalDisconnect) return;
       console.warn('⚠️ [VOZ] Conexión interrumpida. Intentando reconexión...');
-      try {
-        await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
-        ]);
-      } catch {
-        if (this.connection === connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
-          try {
-            connection.rejoin();
-            await entersState(connection, VoiceConnectionStatus.Ready, 5_000);
-            console.log('✅ [VOZ] Reconexión exitosa.');
-            return;
-          } catch (e) {
-            console.error('⚠️ [REJOIN FALLÓ]:', e.message);
-          }
-        }
-
-        if (this.connection === connection && this.lastChannel && (this.status === 'playing' || this.status === 'paused')) {
-          try {
-            this.destroy();
-            await this.connect(this.lastChannel);
-            if (this.currentTrack) {
-              await this._play(this.currentTrack.url, true);
-            }
-          } catch (e) {
-            console.error('⚠️ [RESTAURACIÓN FALLÓ]:', e.message);
-            this.destroy();
-          }
-        } else {
-          this.destroy();
-        }
-      }
+      this._scheduleReconnect();
     });
 
     return this.connection;
+  }
+
+  _scheduleReconnect() {
+    if (!config.KEEP_VOICE_ALIVE || this.intentionalDisconnect || !this.lastChannel) return;
+    if (this.reconnectTimer) return;
+
+    const delay = Math.min(30_000, 1_000 * (2 ** Math.min(this.reconnectAttempts, 5)));
+    this.reconnectAttempts++;
+    console.log(`🔄 [VOZ] Reintento ${this.reconnectAttempts} en ${Math.round(delay / 1000)}s...`);
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.intentionalDisconnect || !this.lastChannel) return;
+
+      const channel = this.lastChannel;
+      try {
+        if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+          this.connection.destroy();
+        }
+        this.connection = null;
+        this.subscription = null;
+
+        await this.connect(channel);
+        this.reconnectAttempts = 0;
+        console.log(`✅ [VOZ] Reconectado automáticamente a "${channel.name}".`);
+
+        if (this.currentTrack && (this.status === 'playing' || this.status === 'paused')) {
+          await this._play(this.currentTrack.url, true);
+        }
+      } catch (error) {
+        console.error('⚠️ [VOZ] Falló la reconexión:', error.message);
+        this._scheduleReconnect();
+      }
+    }, delay);
   }
 
   /**
@@ -392,57 +418,9 @@ class VoiceStateManager {
     // 2. Resolver la fuente de audio
     const { streamUrl, title, webpageUrl } = await resolveAudioSource(query);
 
-    // 3. Crear proceso FFmpeg: convierte el stream a Opus 48kHz para Discord
-    const ffmpegArgs = [
-      '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '-reconnect', '1',
-      '-reconnect_streamed', '1',
-      '-reconnect_delay_max', '5',
-      '-i', streamUrl,
-      '-map', '0:a:0',
-      '-vn',
-      '-f', 's16le',
-      '-acodec', 'pcm_s16le',
-      '-ar', '48000',
-      '-ac', '2',
-      '-hide_banner',
-      '-loglevel', 'error',
-      'pipe:1'
-    ];
-
-    // 4. Lanzar FFmpeg
-    let ffmpegProcess;
-    try {
-      ffmpegProcess = spawn(ffmpegPath, ffmpegArgs, {
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-    } catch (spawnErr) {
-      console.warn(`⚠️ [FFmpeg falló con ${ffmpegPath}]: ${spawnErr.message}. Probando 'ffmpeg' del sistema...`);
-      ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-    }
-
-    this.currentFFmpegProcess = ffmpegProcess;
-
-    ffmpegProcess.stderr.on('data', (data) => {
-      const msg = data.toString().trim();
-      if (msg) console.warn(`⚠️ [FFmpeg]: ${msg}`);
-    });
-
-    ffmpegProcess.on('error', (err) => {
-      console.error('❌ [FFmpeg PROCESO ERROR]:', err.message);
-    });
-
-    ffmpegProcess.on('close', (code) => {
-      if (code !== 0 && code !== null) {
-        console.warn(`⚠️ [FFmpeg] Proceso cerrado con código: ${code}`);
-      }
-    });
-
-    // 5. Crear AudioResource desde PCM crudo; @discordjs/voice lo codifica a Opus.
-    const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.Raw,
+    // El TTS ya demuestra que este pipeline funciona en el hosting. Al pasar
+    // una URL como string, @discordjs/voice crea y administra su propio FFmpeg.
+    const resource = createAudioResource(streamUrl, {
       inlineVolume: true
     });
 
@@ -459,7 +437,7 @@ class VoiceStateManager {
       if (webpageUrl) this.currentTrack.url = webpageUrl;
     }
 
-    // 6. Suscribir y reproducir
+    // 4. Suscribir y reproducir
     if (this.connection) {
       this.subscription = this.connection.subscribe(this.audioPlayer);
     }
@@ -530,6 +508,10 @@ class VoiceStateManager {
 
   destroy() {
     this._cleanupFFmpeg();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.emptyChannelTimeout) {
       clearTimeout(this.emptyChannelTimeout);
       this.emptyChannelTimeout = null;
@@ -546,6 +528,7 @@ class VoiceStateManager {
   }
 
   startEmptyChannelTimer() {
+    if (config.KEEP_VOICE_ALIVE) return;
     if (this.emptyChannelTimeout) return;
     const ms = config.EMPTY_CHANNEL_TIMEOUT_MS || 120000;
     console.log(`⏱️ [AHORRO] Frecuencia solitaria. Desconectando en ${ms / 1000}s...`);

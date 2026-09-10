@@ -32,6 +32,10 @@ module.exports = {
   // Esto ahorra memoria RAM y CPU en tu hosting barato.
   EMPTY_CHANNEL_TIMEOUT_MS: 2 * 60 * 1000,
 
+  // Mantener la radio conectada aunque el canal quede sin usuarios humanos.
+  // Para activar la desconexion automatica, define KEEP_VOICE_ALIVE=false.
+  KEEP_VOICE_ALIVE: process.env.KEEP_VOICE_ALIVE !== 'false',
+
   // Límite máximo de caracteres por mensaje para la auto-lectura del chat
   MAX_TTS_CHARS: 200,
 

@@ -399,11 +399,12 @@ class VoiceStateManager {
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
       '-i', streamUrl,
-      '-f', 'ogg',
-      '-c:a', 'libopus',
+      '-map', '0:a:0',
+      '-vn',
+      '-f', 's16le',
+      '-acodec', 'pcm_s16le',
       '-ar', '48000',
       '-ac', '2',
-      '-b:a', '128k',
       '-hide_banner',
       '-loglevel', 'error',
       'pipe:1'
@@ -439,9 +440,9 @@ class VoiceStateManager {
       }
     });
 
-    // 5. Crear AudioResource con stream Opus nativo en contenedor Ogg
+    // 5. Crear AudioResource desde PCM crudo; @discordjs/voice lo codifica a Opus.
     const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.OggOpus,
+      inputType: StreamType.Raw,
       inlineVolume: true
     });
 

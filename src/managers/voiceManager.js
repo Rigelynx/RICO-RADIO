@@ -108,6 +108,10 @@ function isDirectAudioUrl(url) {
   if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
   if (isYouTubeUrl(url) || isSoundCloudUrl(url)) return false;
 
+  try {
+    if (new URL(url).hostname.endsWith('somafm.com')) return true;
+  } catch {}
+
   const cleanUrl = url.toLowerCase().split('?')[0];
   const directExtensions = ['.mp3', '.ogg', '.aac', '.wav', '.flac', '.opus', '.m4a', '.m3u8'];
   if (directExtensions.some(ext => cleanUrl.endsWith(ext))) return true;

@@ -8,7 +8,8 @@ const https = require('https');
 const YTDLP_DIR = path.join(__dirname, '..', '..', 'node_modules', 'youtube-dl-exec', 'bin');
 const YTDLP_BIN = path.join(YTDLP_DIR, 'yt-dlp');
 const YTDLP_BIN_WIN = path.join(YTDLP_DIR, 'yt-dlp.exe');
-const YTDLP_LINUX_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+const YTDLP_LINUX_ASSET = process.arch === 'arm64' ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux';
+const YTDLP_LINUX_URL = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_LINUX_ASSET}`;
 
 function isLinuxExecutable(binaryPath) {
   try {
